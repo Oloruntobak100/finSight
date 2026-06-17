@@ -1,6 +1,14 @@
 import { createClient } from "@/lib/supabase/client";
 
-const API_BASE = process.env.NEXT_PUBLIC_FASTAPI_URL || "http://localhost:8000";
+/** Ensures absolute URL — missing https:// makes fetch hit the Vercel domain as a path. */
+export function normalizeApiBase(raw: string | undefined): string {
+  const base = (raw || "http://localhost:8000").trim().replace(/\/$/, "");
+  if (!base) return "http://localhost:8000";
+  if (base.startsWith("http://") || base.startsWith("https://")) return base;
+  return `https://${base}`;
+}
+
+const API_BASE = normalizeApiBase(process.env.NEXT_PUBLIC_FASTAPI_URL);
 const AUTH_TIMEOUT_MS = 8_000;
 const FETCH_TIMEOUT_MS = 20_000;
 export const BANKING_TIMEOUT_MS = 90_000;

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { FileText, RefreshCw, Sparkles } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, normalizeApiBase } from "@/lib/api";
 import {
   buildAnalysisQueryString,
   filterSummaryChips,
@@ -209,7 +209,7 @@ export default function ReportsPage() {
       if (!session?.access_token) throw new Error("Not authenticated");
 
       const streamRes = await fetch(
-        `${process.env.NEXT_PUBLIC_FASTAPI_URL || "http://localhost:8001"}/reports/ai-insights`,
+        `${normalizeApiBase(process.env.NEXT_PUBLIC_FASTAPI_URL)}/reports/ai-insights`,
         {
           method: "POST",
           headers: { Authorization: `Bearer ${session.access_token}` },
