@@ -10,6 +10,7 @@ export const config = {
     "/",
     "/login",
     "/register",
+    "/verify-email",
     "/forgot-password",
     "/onboarding",
     "/chat/:path*",

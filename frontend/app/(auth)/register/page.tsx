@@ -20,13 +20,18 @@ export default function RegisterPage() {
     setLoading(true);
     setError("");
     const supabase = createClient();
-    const { error: authError } = await supabase.auth.signUp({ email, password });
+    const { data, error: authError } = await supabase.auth.signUp({ email, password });
     setLoading(false);
     if (authError) {
       setError(authError.message);
       return;
     }
-    router.push("/onboarding");
+    if (data.session) {
+      router.push("/");
+      router.refresh();
+      return;
+    }
+    router.push(`/verify-email?email=${encodeURIComponent(email)}`);
     router.refresh();
   }
 

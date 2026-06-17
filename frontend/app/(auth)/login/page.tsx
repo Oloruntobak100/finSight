@@ -23,6 +23,10 @@ export default function LoginPage() {
     const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (authError) {
+      if (authError.message.toLowerCase().includes("email not confirmed")) {
+        router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+        return;
+      }
       setError(authError.message);
       return;
     }
