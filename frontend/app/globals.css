@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --background: #020617;
+  --foreground: #f1f5f9;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.page-enter {
+  animation: fade-in 0.25s ease-out;
+}
+
+.animate-pulse {
+  animation: shimmer 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes nav-progress {
+  0% {
+    transform: translateX(-100%);
+    width: 30%;
+  }
+  50% {
+    width: 50%;
+  }
+  100% {
+    transform: translateX(350%);
+    width: 30%;
+  }
+}
+
+.nav-progress-bar {
+  animation: nav-progress 1.1s ease-in-out infinite;
+}
+
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"] {
+  color-scheme: dark;
+}
+
+input.date-input::-webkit-calendar-picker-indicator,
+input.date-input::-webkit-inner-spin-button {
+  display: none;
+  -webkit-appearance: none;
+  appearance: none;
+}

@@ -1,0 +1,25 @@
+import { type NextRequest } from "next/server";
+import { updateSession } from "@/lib/supabase/middleware";
+
+export async function middleware(request: NextRequest) {
+  return updateSession(request);
+}
+
+export const config = {
+  matcher: [
+    "/",
+    "/login",
+    "/register",
+    "/forgot-password",
+    "/onboarding",
+    "/chat/:path*",
+    "/accounts/:path*",
+    "/transactions",
+    "/transactions/:path*",
+    "/analysis/:path*",
+    "/forecast/:path*",
+    "/subscriptions/:path*",
+    "/reports/:path*",
+    "/settings/:path*",
+  ],
+};
