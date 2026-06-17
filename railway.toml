@@ -1,8 +1,8 @@
 # FinSight API — deploy FastAPI from backend/, not the repo-root Node workspace.
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "backend/Dockerfile"
-watchPatterns = ["backend/**"]
+dockerfilePath = "Dockerfile"
+watchPatterns = ["backend/**", "Dockerfile"]
 
 [deploy]
 healthcheckPath = "/health"

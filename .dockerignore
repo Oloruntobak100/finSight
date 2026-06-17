@@ -1,0 +1,11 @@
+# Ignore everything except backend for a smaller Railway image context.
+# (Railway still sends the full repo; this trims what Docker copies in later layers.)
+frontend
+app
+node_modules
+frontend/node_modules
+.git
+.cursor
+*.md
+.env
+.env.*
