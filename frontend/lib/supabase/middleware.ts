@@ -1,7 +1,19 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+function missingSupabaseEnv(): boolean {
+  return !process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+}
+
 export async function updateSession(request: NextRequest) {
+  if (missingSupabaseEnv()) {
+    // Avoid MIDDLEWARE_INVOCATION_FAILED when Vercel env vars are not set yet.
+    console.error(
+      "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY — set them in Vercel → Settings → Environment Variables, then redeploy."
+    );
+    return NextResponse.next({ request });
+  }
+
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -24,10 +36,16 @@ export async function updateSession(request: NextRequest) {
   );
 
   // getSession reads the cookie locally — getUser() hits Supabase on every navigation
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const user = session?.user ?? null;
+  let user = null;
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    user = session?.user ?? null;
+  } catch (err) {
+    console.error("Supabase middleware getSession failed:", err);
+    return supabaseResponse;
+  }
 
   const isAuthRoute =
     request.nextUrl.pathname.startsWith("/login") ||
