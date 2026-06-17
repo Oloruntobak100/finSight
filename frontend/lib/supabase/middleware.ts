@@ -56,6 +56,7 @@ export async function updateSession(request: NextRequest) {
   const isProtected =
     request.nextUrl.pathname.startsWith("/dashboard") ||
     request.nextUrl.pathname === "/" ||
+    request.nextUrl.pathname.startsWith("/oauth/quickbooks/callback") ||
     request.nextUrl.pathname.startsWith("/chat") ||
     request.nextUrl.pathname.startsWith("/accounts") ||
     request.nextUrl.pathname.startsWith("/forecast") ||

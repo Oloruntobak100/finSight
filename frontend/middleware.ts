@@ -12,6 +12,7 @@ export const config = {
     "/register",
     "/verify-email",
     "/forgot-password",
+    "/oauth/quickbooks/callback",
     "/onboarding",
     "/chat/:path*",
     "/accounts/:path*",

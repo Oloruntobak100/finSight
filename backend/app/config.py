@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # QuickBooks
     quickbooks_client_id: str = ""
     quickbooks_client_secret: str = ""
-    quickbooks_redirect_uri: str = "http://localhost:8000/oauth/quickbooks/callback"
+    quickbooks_redirect_uri: str = ""
     quickbooks_env: str = "sandbox"
 
     # Xero

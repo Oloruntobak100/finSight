@@ -1,4 +1,6 @@
-# Legacy / unrelated projects (repo root only — not frontend/app)
+# QuickBooks OAuth reference kit (local only — not part of the app)
+quickbooks_oauth/
+
 /app/
 
 # Dependencies

@@ -39,6 +39,22 @@ class OAuthAuthorizeResponse(BaseModel):
     authorization_url: str
 
 
+class QuickBooksConfigResponse(BaseModel):
+    client_id: str
+    redirect_uri: str
+    scope: str
+    oauth_url: str
+    environment: str
+    configured: bool
+
+
+class QuickBooksExchangeRequest(BaseModel):
+    code: str
+    realm_id: str = Field(..., alias="realmId")
+
+    model_config = {"populate_by_name": True}
+
+
 class SandboxSimulateRequest(BaseModel):
     account_id: str
     description: str = "FinSight Sandbox Coffee"

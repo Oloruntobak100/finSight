@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { usePlaidLink } from "react-plaid-link";
 import { ChevronRight, FlaskConical } from "lucide-react";
 import {
@@ -10,6 +11,7 @@ import {
   type ConnectionProvider,
 } from "@/components/accounts/connection-progress";
 import { SimulateTransactionDialog } from "@/components/accounts/simulate-transaction-dialog";
+import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { useMonoConnect } from "@/hooks/use-mono-connect";
 import { apiFetch, ApiError, BANKING_TIMEOUT_MS } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
@@ -27,6 +29,15 @@ interface Account {
 }
 
 export default function AccountsPage() {
+  return (
+    <Suspense fallback={<div className="page-enter p-6 text-slate-400">Loading accounts…</div>}>
+      <AccountsPageContent />
+    </Suspense>
+  );
+}
+
+function AccountsPageContent() {
+  const searchParams = useSearchParams();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
   const [linkToken, setLinkToken] = useState<string | null>(null);
@@ -64,6 +75,18 @@ export default function AccountsPage() {
       return false;
     }
   }, []);
+
+  useEffect(() => {
+    const connected = searchParams.get("connected");
+    const err = searchParams.get("error");
+    if (connected === "quickbooks") {
+      setSyncMessage("QuickBooks connected successfully.");
+      setError(null);
+      void loadAccounts();
+    } else if (err) {
+      setError(decodeURIComponent(err));
+    }
+  }, [searchParams, loadAccounts]);
 
   useEffect(() => {
     let active = true;
@@ -250,11 +273,6 @@ export default function AccountsPage() {
     openMono();
   }
 
-  async function connectQuickBooks() {
-    const data = await apiFetch<{ authorization_url: string }>("/oauth/quickbooks/authorize");
-    window.location.href = data.authorization_url;
-  }
-
   async function connectXero() {
     const data = await apiFetch<{ authorization_url: string }>("/oauth/xero/authorize");
     window.location.href = data.authorization_url;
@@ -359,9 +377,7 @@ export default function AccountsPage() {
             <CardTitle className="text-base">QuickBooks</CardTitle>
             <CardDescription>Accounting software</CardDescription>
           </CardHeader>
-          <Button onClick={connectQuickBooks} variant="outline" className="w-full">
-            Connect QuickBooks
-          </Button>
+          <QuickBooksConnectButton variant="outline" className="w-full" />
         </Card>
         <Card>
           <CardHeader>
