@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import analytics, banking, chat, oauth, reports, transactions, webhooks
+from app.routers import analytics, banking, books, chat, oauth, reports, transactions, webhooks
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 
 
@@ -32,6 +32,7 @@ app.add_middleware(
 
 app.include_router(banking.router)
 app.include_router(oauth.router)
+app.include_router(books.router)
 app.include_router(transactions.router)
 app.include_router(analytics.router)
 app.include_router(chat.router)

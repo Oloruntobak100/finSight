@@ -23,5 +23,6 @@ export const config = {
     "/subscriptions/:path*",
     "/reports/:path*",
     "/settings/:path*",
+    "/books/:path*",
   ],
 };

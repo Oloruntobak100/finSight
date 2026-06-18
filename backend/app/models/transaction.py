@@ -40,6 +40,12 @@ class TransactionResponse(BaseModel):
     is_recurring: bool = False
     created_at: Optional[str] = None
     details: Optional[TransactionDetails] = None
+    qb_sync_status: Optional[str] = None
+    qb_account_id: Optional[str] = None
+    qb_account_name: Optional[str] = None
+    qb_confidence: Optional[float] = None
+    qb_posted_at: Optional[str] = None
+    qb_error: Optional[str] = None
 
 
 class TransactionListResponse(BaseModel):

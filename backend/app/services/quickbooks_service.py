@@ -1,8 +1,9 @@
+import asyncio
 import base64
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -270,6 +271,20 @@ async def get_valid_account(user_id: str) -> dict[str, Any] | None:
 
 
 async def qb_company_get_json(user_id: str, company_path: str) -> dict[str, Any]:
+    return await _qb_company_request(user_id, "GET", company_path)
+
+
+async def qb_company_post_json(user_id: str, company_path: str, body: dict[str, Any]) -> dict[str, Any]:
+    return await _qb_company_request(user_id, "POST", company_path, body=body)
+
+
+async def _qb_company_request(
+    user_id: str,
+    method: str,
+    company_path: str,
+    body: dict[str, Any] | None = None,
+    max_retries: int = 2,
+) -> dict[str, Any]:
     account = await get_valid_account(user_id)
     if not account:
         raise ValueError("QuickBooks not connected")
@@ -282,17 +297,79 @@ async def qb_company_get_json(user_id: str, company_path: str) -> dict[str, Any]
     path = company_path if company_path.startswith("/") else f"/{company_path}"
     url = f"{settings.quickbooks_base_url}/v3/company/{realm_id}{path}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.get(
-            url,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-            },
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                }
+                if method.upper() == "POST":
+                    headers["Content-Type"] = "application/json"
+                    res = await client.post(url, headers=headers, json=body or {})
+                else:
+                    res = await client.get(url, headers=headers)
+
+                if res.status_code == 429 and attempt < max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                if not res.is_success:
+                    raise ValueError(f"QuickBooks API error ({res.status_code}): {res.text}")
+                return res.json()
+        except ValueError as exc:
+            last_error = exc
+            if "429" in str(exc) and attempt < max_retries:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise ValueError("QuickBooks API request failed")
+
+
+async def qb_query(user_id: str, sql: str) -> dict[str, Any]:
+    encoded = quote(sql, safe="")
+    return await qb_company_get_json(user_id, f"/query?query={encoded}&minorversion=75")
+
+
+async def sync_chart_of_accounts(user_id: str) -> dict[str, Any]:
+    account = await get_valid_account(user_id)
+    if not account:
+        raise ValueError("QuickBooks not connected")
+
+    realm_id = account["realm_id"]
+    data = await qb_query(user_id, "SELECT * FROM Account WHERE Active = true MAXRESULTS 1000")
+    query_response = data.get("QueryResponse") or {}
+    accounts = query_response.get("Account") or []
+    if isinstance(accounts, dict):
+        accounts = [accounts]
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {
+            "user_id": user_id,
+            "realm_id": realm_id,
+            "qb_account_id": str(item.get("Id")),
+            "name": item.get("Name") or "Unknown",
+            "account_type": item.get("AccountType"),
+            "account_sub_type": item.get("AccountSubType"),
+            "active": item.get("Active", True),
+            "synced_at": now,
+        }
+        for item in accounts
+        if item.get("Id")
+    ]
+
+    sb = get_supabase()
+    if rows:
+        await run_db(
+            lambda: sb.table("qb_chart_of_accounts")
+            .upsert(rows, on_conflict="user_id,qb_account_id")
+            .execute()
         )
-        if not res.is_success:
-            raise ValueError(f"QuickBooks API error ({res.status_code}): {res.text}")
-        return res.json()
+
+    return {"synced": len(rows), "realm_id": realm_id}
 
 
 async def get_company_info(user_id: str) -> dict[str, Any]:
@@ -301,9 +378,7 @@ async def get_company_info(user_id: str) -> dict[str, Any]:
         raise ValueError("QuickBooks not connected")
 
     realm_id = account["realm_id"]
-    data = await qb_company_get_json(
-        user_id, f"/companyinfo/{realm_id}?minorversion=75"
-    )
+    data = await qb_company_get_json(user_id, f"/companyinfo/{realm_id}?minorversion=75")
     company = data.get("CompanyInfo") or {}
     if not company:
         raise ValueError("Unexpected QuickBooks response (missing CompanyInfo)")

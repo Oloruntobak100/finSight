@@ -15,6 +15,7 @@ import {
   Sparkles,
   Receipt,
   BarChart3,
+  BookOpen,
 } from "lucide-react";
 import { NavProgress } from "@/components/dashboard/nav-progress";
 import { Spinner } from "@/components/ui/spinner";
@@ -25,6 +26,7 @@ type NavItem = { href: string; label: string; icon: React.ComponentType<{ classN
 const MAIN_NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/transactions", label: "Transactions", icon: Receipt },
+  { href: "/books", label: "Books", icon: BookOpen },
 ];
 
 const ANALYTICS_NAV: NavItem[] = [
