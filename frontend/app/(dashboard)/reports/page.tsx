@@ -236,6 +236,7 @@ export default function ReportsPage() {
     if (tab === "overview") {
       loadQbPnl(filters, false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only refetch when date range changes
   }, [tab, filters.dateFrom, filters.dateTo, loadQbPnl]);
 
   async function generateAiInsights() {

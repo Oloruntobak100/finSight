@@ -8,7 +8,6 @@ import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connec
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   approveBulk,
@@ -26,10 +25,11 @@ import {
   setPostingIntent,
   syncCoa,
   type AutomationSettings,
+  type BooksReadiness,
   type CoaAccount,
   type QbSyncStatus,
   type QueueGroup,
-  type BooksReadiness,
+  type QueueItem,
 } from "@/lib/books";
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";

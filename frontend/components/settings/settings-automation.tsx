@@ -9,7 +9,6 @@ import {
   type LearningProgressItem,
 } from "@/lib/books";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 
 interface SettingsAutomationProps {

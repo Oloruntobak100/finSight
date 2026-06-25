@@ -6,7 +6,7 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { approveTransaction, postTransaction, runReconciliation } from "@/lib/books";
+import { runReconciliation } from "@/lib/books";
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
@@ -64,15 +64,6 @@ export default function ReconciliationPage() {
       }
     }
   }, []);
-
-  async function postFromBank(txnId: string, qbAccountId?: string) {
-    if (!qbAccountId) {
-      await postTransaction(txnId);
-    } else {
-      await approveTransaction(txnId, qbAccountId, true);
-    }
-    await run();
-  }
 
   const summary = result?.summary;
 
