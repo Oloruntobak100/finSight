@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { FileText, RefreshCw, Sparkles } from "lucide-react";
+import { FileText, RefreshCw, Sparkles, BookOpen } from "lucide-react";
 import { apiFetch, normalizeApiBase } from "@/lib/api";
+import { fetchQbPnl } from "@/lib/books";
 import {
   buildAnalysisQueryString,
   filterSummaryChips,
@@ -87,6 +88,21 @@ interface ReportData {
   };
 }
 
+interface QbPnlSection {
+  section: string;
+  label: string;
+  amount: number;
+}
+
+interface QbPnlData {
+  report_name?: string;
+  start_date?: string;
+  end_date?: string;
+  sections: QbPnlSection[];
+  cached?: boolean;
+  fetched_at?: string;
+}
+
 type Tab = "overview" | "monthly" | "spending" | "transfers" | "transactions" | "insights" | "ai";
 
 const TABS: { id: Tab; label: string }[] = [
@@ -149,6 +165,9 @@ export default function ReportsPage() {
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [qbPnl, setQbPnl] = useState<QbPnlData | null>(null);
+  const [qbPnlLoading, setQbPnlLoading] = useState(false);
+  const [qbPnlError, setQbPnlError] = useState<string | null>(null);
 
   useEffect(() => {
     setFilters(loadAnalysisFilters());
@@ -196,7 +215,28 @@ export default function ReportsPage() {
   function applyFilters() {
     saveAnalysisFilters(filters);
     load(filters);
+    loadQbPnl(filters, false);
   }
+
+  const loadQbPnl = useCallback(async (f: AnalysisFilterState, refresh = false) => {
+    setQbPnlLoading(true);
+    setQbPnlError(null);
+    try {
+      const data = (await fetchQbPnl(f.dateFrom, f.dateTo, refresh)) as QbPnlData;
+      setQbPnl(data);
+    } catch (err) {
+      setQbPnl(null);
+      setQbPnlError(err instanceof Error ? err.message : "QuickBooks P&L unavailable");
+    } finally {
+      setQbPnlLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === "overview") {
+      loadQbPnl(filters, false);
+    }
+  }, [tab, filters.dateFrom, filters.dateTo, loadQbPnl]);
 
   async function generateAiInsights() {
     setAiLoading(true);
@@ -322,6 +362,58 @@ export default function ReportsPage() {
               accent={executive_summary.net_cash_flow >= 0 ? "positive" : "negative"}
             />
           </div>
+
+          <Card>
+            <CardHeader className="flex flex-row items-start justify-between gap-4">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <BookOpen className="h-4 w-4 text-emerald-400" />
+                  QuickBooks Profit &amp; Loss
+                </CardTitle>
+                <CardDescription>
+                  {qbPnl?.start_date && qbPnl?.end_date
+                    ? `${qbPnl.start_date} → ${qbPnl.end_date}`
+                    : `${filters.dateFrom} → ${filters.dateTo}`}
+                  {qbPnl?.cached ? " · cached" : qbPnl?.fetched_at ? " · live" : ""}
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                loading={qbPnlLoading}
+                loadingLabel="Loading…"
+                onClick={() => loadQbPnl(filters, true)}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Refresh P&amp;L
+              </Button>
+            </CardHeader>
+            {qbPnlLoading && !qbPnl && (
+              <div className="flex items-center gap-2 px-6 pb-6 text-sm text-slate-400">
+                <Spinner size="sm" />
+                Loading QuickBooks report…
+              </div>
+            )}
+            {qbPnlError && (
+              <p className="px-6 pb-6 text-sm text-slate-500">
+                {qbPnlError}. Connect QuickBooks in Settings to see books P&amp;L here.
+              </p>
+            )}
+            {qbPnl && qbPnl.sections.length > 0 && (
+              <DataTable
+                headers={["Section", "Line item", "Amount"]}
+                rows={qbPnl.sections.slice(0, 40).map((row) => [
+                  row.section,
+                  row.label,
+                  fmt(row.amount),
+                ])}
+                empty="No P&L lines for this period"
+              />
+            )}
+            {qbPnl && qbPnl.sections.length === 0 && !qbPnlLoading && (
+              <p className="px-6 pb-6 text-sm text-slate-500">No P&amp;L data for this period.</p>
+            )}
+          </Card>
 
           <Card>
             <CardHeader>

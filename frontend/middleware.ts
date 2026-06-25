@@ -24,5 +24,6 @@ export const config = {
     "/reports/:path*",
     "/settings/:path*",
     "/books/:path*",
+    "/reconciliation/:path*",
   ],
 };

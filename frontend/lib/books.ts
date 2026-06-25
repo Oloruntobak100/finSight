@@ -6,7 +6,10 @@ export type QbSyncStatus =
   | "posted"
   | "excluded"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "auto_approved";
+
+export type SuggestionMethod = "rule" | "fingerprint" | "rag" | "llm" | "auto" | "manual";
 
 export interface CoaAccount {
   id: string;
@@ -36,15 +39,30 @@ export interface QueueItem {
   transaction_type: string;
   account_id?: string | null;
   account_name?: string | null;
+  payee_pattern?: string | null;
+  posting_intent?: string | null;
   qb_sync_status?: QbSyncStatus | null;
   qb_account_id?: string | null;
   qb_account_name?: string | null;
   qb_payment_account_id?: string | null;
   qb_confidence?: number | null;
+  qb_suggestion_method?: SuggestionMethod | null;
+  qb_confidence_reason?: string | null;
   qb_posting_type?: string | null;
   qb_entity_id?: string | null;
   qb_posted_at?: string | null;
   qb_error?: string | null;
+}
+
+export interface QueueGroup {
+  payee_pattern: string;
+  count: number;
+  total_amount: number;
+  qb_account_id?: string | null;
+  qb_account_name?: string | null;
+  qb_confidence?: number | null;
+  qb_suggestion_method?: string | null;
+  transaction_ids: string[];
 }
 
 export interface QueueList {
@@ -57,12 +75,29 @@ export interface QueueList {
 
 export interface BooksSummary {
   counts: Record<string, number>;
+  automation?: AutomationSettings;
+}
+
+export interface AutomationSettings {
+  auto_approve_enabled: boolean;
+  auto_approve_threshold: number;
+  digest_enabled: boolean;
 }
 
 export interface QuickBooksStatus {
   connected: boolean;
   account_name?: string;
   expired?: boolean;
+}
+
+export interface LearningProgressItem {
+  payee_pattern: string;
+  account_name?: string | null;
+  qb_account_id?: string | null;
+  transaction_count?: number;
+  avg_confidence: number;
+  auto_approve_eligible: boolean;
+  status: string;
 }
 
 export async function getQuickBooksStatus(): Promise<QuickBooksStatus> {
@@ -106,8 +141,56 @@ export async function getBooksQueue(
   return apiFetch(`/books/queue?${params}`);
 }
 
+export async function getBooksGroups(status: QbSyncStatus = "pending"): Promise<QueueGroup[]> {
+  return apiFetch(`/books/groups?status=${status}`);
+}
+
 export async function getBooksSummary(): Promise<BooksSummary> {
   return apiFetch("/books/summary");
+}
+
+export async function approveTransaction(
+  transactionId: string,
+  finalAccountId: string,
+  post = true
+): Promise<unknown> {
+  return apiFetch("/books/approve", {
+    method: "POST",
+    body: JSON.stringify({
+      transaction_id: transactionId,
+      final_account_id: finalAccountId,
+      post,
+    }),
+  });
+}
+
+export async function approveBulk(body: {
+  transaction_ids?: string[];
+  payee_pattern?: string;
+  final_account_id?: string;
+  post?: boolean;
+}): Promise<{ approved: number; errors: { transaction_id: string; error: string }[] }> {
+  return apiFetch("/books/approve/bulk", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function setPostingIntent(
+  transactionId: string,
+  intent: "expense" | "transfer" | "personal"
+): Promise<unknown> {
+  return apiFetch("/books/intent", {
+    method: "POST",
+    body: JSON.stringify({ transaction_id: transactionId, intent }),
+  });
+}
+
+export async function rejectSuggestion(transactionId: string): Promise<unknown> {
+  return apiFetch("/books/reject", {
+    method: "POST",
+    body: JSON.stringify({ transaction_id: transactionId }),
+  });
 }
 
 export async function postTransaction(transactionId: string): Promise<unknown> {
@@ -134,4 +217,47 @@ export async function excludeTransaction(transactionId: string): Promise<unknown
     method: "POST",
     body: JSON.stringify({ transaction_id: transactionId }),
   });
+}
+
+export async function getAutomationSettings(): Promise<AutomationSettings> {
+  return apiFetch("/users/automation");
+}
+
+export async function updateAutomationSettings(
+  patch: Partial<AutomationSettings>
+): Promise<AutomationSettings> {
+  return apiFetch("/users/automation", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function getLearningProgress(): Promise<{
+  items: LearningProgressItem[];
+  automation: AutomationSettings;
+}> {
+  return apiFetch("/users/learning-progress");
+}
+
+export async function runReconciliation(periodStart?: string, periodEnd?: string): Promise<unknown> {
+  return apiFetch("/reconciliation/run", {
+    method: "POST",
+    body: JSON.stringify({
+      period_start: periodStart ?? null,
+      period_end: periodEnd ?? null,
+    }),
+  });
+}
+
+export async function fetchQbPnl(
+  startDate: string,
+  endDate: string,
+  refresh = false
+): Promise<unknown> {
+  const params = new URLSearchParams({
+    start_date: startDate,
+    end_date: endDate,
+    refresh: String(refresh),
+  });
+  return apiFetch(`/qb-reports/pnl?${params}`);
 }

@@ -57,11 +57,15 @@ class QueueItemResponse(BaseModel):
     transaction_type: str
     account_id: Optional[str] = None
     account_name: Optional[str] = None
+    payee_pattern: Optional[str] = None
+    posting_intent: Optional[str] = None
     qb_sync_status: Optional[str] = None
     qb_account_id: Optional[str] = None
     qb_account_name: Optional[str] = None
     qb_payment_account_id: Optional[str] = None
     qb_confidence: Optional[float] = None
+    qb_suggestion_method: Optional[str] = None
+    qb_confidence_reason: Optional[str] = None
     qb_posting_type: Optional[str] = None
     qb_entity_id: Optional[str] = None
     qb_posted_at: Optional[str] = None
@@ -76,12 +80,46 @@ class QueueListResponse(BaseModel):
     total_pages: int
 
 
+class QueueGroupResponse(BaseModel):
+    payee_pattern: str
+    count: int
+    total_amount: float
+    qb_account_id: Optional[str] = None
+    qb_account_name: Optional[str] = None
+    qb_confidence: Optional[float] = None
+    qb_suggestion_method: Optional[str] = None
+    transaction_ids: list[str]
+
+
 class PostRequest(BaseModel):
     transaction_id: str
 
 
 class BulkPostRequest(BaseModel):
     transaction_ids: list[str] = Field(..., min_length=1)
+
+
+class ApproveRequest(BaseModel):
+    transaction_id: str
+    final_account_id: str
+    post: bool = False
+    payment_account_id: Optional[str] = None
+
+
+class BulkApproveRequest(BaseModel):
+    transaction_ids: Optional[list[str]] = None
+    payee_pattern: Optional[str] = None
+    final_account_id: Optional[str] = None
+    post: bool = False
+
+
+class IntentRequest(BaseModel):
+    transaction_id: str
+    intent: Literal["expense", "transfer", "personal"]
+
+
+class RejectRequest(BaseModel):
+    transaction_id: str
 
 
 class PostResponse(BaseModel):
@@ -101,7 +139,16 @@ class BulkPostResponse(BaseModel):
 
 class BooksSummaryResponse(BaseModel):
     counts: dict[str, int]
+    automation: Optional[dict[str, Any]] = None
 
 
 class ExcludeRequest(BaseModel):
     transaction_id: str
+
+
+class ApproveResponse(BaseModel):
+    approved: bool
+    transaction_id: str
+    decision: Optional[dict[str, Any]] = None
+    post: Optional[dict[str, Any]] = None
+    transaction: Optional[dict[str, Any]] = None

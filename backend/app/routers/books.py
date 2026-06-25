@@ -1,10 +1,11 @@
-from typing import Optional
-
 from fastapi import APIRouter, HTTPException, Query
 
 from app.auth.dependencies import CurrentUser
 from app.models.books import (
+    ApproveRequest,
+    ApproveResponse,
     BooksSummaryResponse,
+    BulkApproveRequest,
     BulkPostRequest,
     BulkPostResponse,
     ClassifyRequest,
@@ -13,23 +14,31 @@ from app.models.books import (
     CoaListResponse,
     CoaSyncResponse,
     ExcludeRequest,
+    IntentRequest,
     MappingResponse,
     MappingUpsertRequest,
     PostRequest,
     PostResponse,
-    QueueListResponse,
+    QueueGroupResponse,
     QueueItemResponse,
+    QueueListResponse,
+    RejectRequest,
 )
 from app.services.books_service import (
+    approve_transaction,
+    approve_transactions_bulk,
     classify_user_transactions,
     ensure_coa_synced,
     exclude_transaction,
     get_mappings,
     get_queue,
+    get_queue_groups,
     get_summary,
     list_coa as list_coa_rows,
     post_transaction as post_txn_service,
     post_transactions_bulk,
+    reject_suggestion,
+    set_posting_intent,
     upsert_mapping as upsert_mapping_service,
 )
 from app.services.quickbooks_service import get_connection_status, sync_chart_of_accounts
@@ -56,7 +65,7 @@ async def sync_coa(user_id: CurrentUser) -> CoaSyncResponse:
 @router.get("/coa", response_model=CoaListResponse)
 async def list_coa(
     user_id: CurrentUser,
-    account_type: Optional[str] = None,
+    account_type: str | None = None,
 ) -> CoaListResponse:
     rows = await list_coa_rows(user_id, account_type)
     items = [
@@ -106,7 +115,7 @@ async def classify_transactions(
 @router.get("/queue", response_model=QueueListResponse)
 async def books_queue(
     user_id: CurrentUser,
-    status: Optional[str] = Query(None),
+    status: str | None = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ) -> QueueListResponse:
@@ -120,10 +129,68 @@ async def books_queue(
     )
 
 
+@router.get("/groups", response_model=list[QueueGroupResponse])
+async def books_queue_groups(
+    user_id: CurrentUser,
+    status: str = Query("pending"),
+) -> list[QueueGroupResponse]:
+    groups = await get_queue_groups(user_id, status)
+    return [QueueGroupResponse(**g) for g in groups]
+
+
 @router.get("/summary", response_model=BooksSummaryResponse)
 async def books_summary(user_id: CurrentUser) -> BooksSummaryResponse:
     data = await get_summary(user_id)
     return BooksSummaryResponse(**data)
+
+
+@router.post("/approve", response_model=ApproveResponse)
+async def approve_txn(user_id: CurrentUser, body: ApproveRequest) -> ApproveResponse:
+    await _ensure_qb_connected(user_id)
+    try:
+        result = await approve_transaction(
+            user_id,
+            body.transaction_id,
+            body.final_account_id,
+            post=body.post,
+            payment_account_id=body.payment_account_id,
+        )
+        return ApproveResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/approve/bulk")
+async def approve_bulk(user_id: CurrentUser, body: BulkApproveRequest) -> dict:
+    await _ensure_qb_connected(user_id)
+    try:
+        return await approve_transactions_bulk(
+            user_id,
+            body.transaction_ids,
+            body.payee_pattern,
+            post=body.post,
+            final_account_id=body.final_account_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/reject")
+async def reject_txn(user_id: CurrentUser, body: RejectRequest) -> dict:
+    try:
+        return await reject_suggestion(user_id, body.transaction_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/intent")
+async def set_intent(user_id: CurrentUser, body: IntentRequest) -> dict:
+    await _ensure_qb_connected(user_id)
+    try:
+        txn = await set_posting_intent(user_id, body.transaction_id, body.intent)
+        return {"intent": body.intent, "transaction": txn}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/post", response_model=PostResponse)

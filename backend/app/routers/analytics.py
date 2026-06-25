@@ -1,6 +1,12 @@
-from fastapi import APIRouter, Query
+import json
+
+import pandas as pd
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import CurrentUser
+from app.config import settings
+from app.database import get_supabase, run_db
 from app.models.analysis_filters import parse_analysis_filters
 from app.models.metrics import (
     BalancesResponse,
@@ -13,8 +19,11 @@ from app.models.metrics import (
 from app.services.analysis_service import get_financial_analysis
 from app.services.analytics_service import calculate_metrics, get_latest_metrics, get_subscriptions
 from app.services.balance_service import get_user_balances
+from app.services.books_service import get_learning_progress
+from app.services.chat_service import _resolve_llm_provider, build_financial_context
 from app.services.forecasting_service import generate_forecast, get_latest_forecasts
 from app.services.transaction_analytics import get_analytics_meta
+from app.services.transfer_utils import mark_transfers_df
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -145,3 +154,103 @@ async def get_analysis(
     )
     data = await get_financial_analysis(user_id, filters, refresh_balances=True)
     return FinancialAnalysisResponse(**data)
+
+
+@router.get("/learning-progress")
+async def analytics_learning_progress(user_id: CurrentUser) -> dict:
+    items = await get_learning_progress(user_id)
+    return {"items": items}
+
+
+@router.get("/books-insights")
+async def books_insights_metrics(user_id: CurrentUser) -> dict:
+    sb = get_supabase()
+    res = await run_db(
+        lambda: sb.table("transactions")
+        .select("amount, transaction_type, category, merchant_name, payee_pattern, description")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    rows = res.data or []
+    debits = [r for r in rows if r.get("transaction_type") == "debit"]
+    df = pd.DataFrame(debits) if debits else pd.DataFrame()
+    transfer_volume = 0.0
+    expense_volume = 0.0
+    if not df.empty:
+        marked = mark_transfers_df(df)
+        transfer_volume = float(marked[marked["is_transfer"]]["amount"].sum())
+        expense_volume = float(marked[~marked["is_transfer"]]["amount"].sum())
+    total_debits = transfer_volume + expense_volume
+    transfer_ratio = round(transfer_volume / total_debits, 4) if total_debits else 0.0
+
+    payee_totals: dict[str, float] = {}
+    for r in debits:
+        key = r.get("payee_pattern") or r.get("merchant_name") or "unknown"
+        payee_totals[key] = payee_totals.get(key, 0.0) + abs(float(r.get("amount") or 0))
+    top_payees = sorted(payee_totals.items(), key=lambda x: -x[1])[:5]
+
+    analysis = await get_financial_analysis(user_id, parse_analysis_filters(), refresh_balances=True)
+    balances = analysis.get("balances", {})
+    total_balance = float(balances.get("total_balance") or 0)
+    monthly_burn = float(analysis.get("metrics", {}).get("total_expenses") or 0)
+    runway = round(total_balance / monthly_burn, 1) if monthly_burn > 0 else None
+
+    return {
+        "transfer_vs_expense_ratio": transfer_ratio,
+        "transfer_volume": transfer_volume,
+        "expense_volume": expense_volume,
+        "top_payees": [{"payee": k, "amount": v} for k, v in top_payees],
+        "estimated_monthly_burn": monthly_burn,
+        "cash_runway_months": runway,
+        "total_balance": total_balance,
+    }
+
+
+@router.post("/books-insights/commentary")
+async def books_insights_commentary(user_id: CurrentUser) -> StreamingResponse:
+    provider_llm = _resolve_llm_provider()
+    if provider_llm == "none":
+        raise HTTPException(status_code=503, detail="LLM not configured")
+
+    metrics = await books_insights_metrics(user_id)
+    context = await build_financial_context(user_id)
+    prompt = (
+        "You are a financial advisor for a Nigerian SME. Be concise. "
+        "Give 3-5 specific insights about financial health based on the data. "
+        "Flag if transfer ratio is high (books may be incomplete). "
+        "Use only provided data.\n\n"
+        f"Books metrics: {json.dumps(metrics, default=str)}\n"
+        f"Context: {json.dumps(context, default=str)[:12000]}"
+    )
+
+    async def stream():
+        if provider_llm == "openai":
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            response = await client.chat.completions.create(
+                model=settings.openai_model,
+                max_tokens=1200,
+                stream=True,
+                messages=[
+                    {"role": "system", "content": "You are FinSight AI CFO."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            async for chunk in response:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    yield delta
+        else:
+            import anthropic
+
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            with client.messages.stream(
+                model=settings.anthropic_model,
+                max_tokens=1200,
+                messages=[{"role": "user", "content": prompt}],
+            ) as s:
+                for text in s.text_stream:
+                    yield text
+
+    return StreamingResponse(stream(), media_type="text/plain")

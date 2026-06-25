@@ -444,7 +444,7 @@ def build_plaid_transaction_row(
     merchant = extract_plaid_merchant(txn)
     description = extract_plaid_description(txn)
 
-    return {
+    row = {
         "user_id": user_id,
         "account_id": account_id,
         "transaction_date": str(_plaid_field(txn, "date")),
@@ -459,6 +459,10 @@ def build_plaid_transaction_row(
         "external_id": external_id,
         "raw_metadata": raw_metadata,
     }
+    from app.services.fingerprint_service import fingerprint_fields_for_row
+
+    row.update(fingerprint_fields_for_row(row))
+    return row
 
 
 def build_mono_transaction_row(
@@ -476,7 +480,7 @@ def build_mono_transaction_row(
     merchant = extract_mono_merchant(txn)
     description = extract_mono_description(txn, txn_type)
 
-    return {
+    row = {
         "user_id": user_id,
         "account_id": account_id,
         "transaction_date": (txn.get("date") or "")[:10],
@@ -491,6 +495,10 @@ def build_mono_transaction_row(
         "external_id": external_id,
         "raw_metadata": txn,
     }
+    from app.services.fingerprint_service import fingerprint_fields_for_row
+
+    row.update(fingerprint_fields_for_row({**row, "raw_metadata": txn}))
+    return row
 
 
 async def reprocess_stored_transactions(

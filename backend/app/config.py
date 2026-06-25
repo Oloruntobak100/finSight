@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     llm_provider: str = "auto"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
 
     # Anthropic
     anthropic_api_key: str = ""
