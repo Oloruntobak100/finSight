@@ -73,9 +73,26 @@ export interface QueueList {
   total_pages: number;
 }
 
+export interface BooksReadiness {
+  qb_connected: boolean;
+  bank_connected: boolean;
+  bank_accounts: Array<{
+    id: string;
+    account_name?: string | null;
+    provider?: string;
+    last_synced_at?: string | null;
+  }>;
+  historical_only: boolean;
+  historical_count: number;
+  total_books_transactions: number;
+  qb_environment?: string | null;
+  qb_account_name?: string | null;
+}
+
 export interface BooksSummary {
   counts: Record<string, number>;
   automation?: AutomationSettings;
+  readiness?: BooksReadiness;
 }
 
 export interface AutomationSettings {
@@ -88,6 +105,7 @@ export interface QuickBooksStatus {
   connected: boolean;
   account_name?: string;
   expired?: boolean;
+  environment?: string;
 }
 
 export interface LearningProgressItem {

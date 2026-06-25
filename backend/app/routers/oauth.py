@@ -120,6 +120,8 @@ async def xero_disconnect(user_id: CurrentUser, account_id: str = Query(...)) ->
 
 @router.get("/accounts")
 async def list_connected_accounts(user_id: CurrentUser) -> dict:
+    from app.config import settings
+
     sb = get_supabase()
     res = await run_db(
         lambda: sb.table("connected_accounts")
@@ -127,4 +129,14 @@ async def list_connected_accounts(user_id: CurrentUser) -> dict:
         .eq("user_id", user_id)
         .execute()
     )
-    return {"accounts": res.data or []}
+    accounts = []
+    for row in res.data or []:
+        item = dict(row)
+        if item.get("provider") == "quickbooks":
+            item["environment"] = settings.quickbooks_env
+        elif item.get("provider") == "plaid":
+            item["environment"] = settings.plaid_env
+        elif item.get("provider") == "mono":
+            item["environment"] = settings.mono_env
+        accounts.append(item)
+    return {"accounts": accounts}

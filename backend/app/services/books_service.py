@@ -317,14 +317,16 @@ def classify_transaction(
         return {
             **base_excluded,
             "qb_sync_status": "excluded",
-            "qb_confidence": 1.0,
+            "qb_confidence": None,
+            "qb_confidence_reason": "Bank transfer detected — not posted as a business expense",
         }
 
     if txn_type == "credit":
         return {
             **base_excluded,
             "qb_sync_status": "skipped",
-            "qb_confidence": 1.0,
+            "qb_confidence": None,
+            "qb_confidence_reason": "Income or deposit — expense posting does not apply",
             "qb_posting_type": "deposit",
         }
 
@@ -608,6 +610,64 @@ async def get_queue_groups(
     return sorted(groups.values(), key=lambda x: -x["count"])
 
 
+async def get_books_readiness(user_id: str) -> dict[str, Any]:
+    """Whether Books can sync new bank data vs showing historical rows only."""
+    from app.config import settings
+    from app.services.quickbooks_service import get_connection_status
+
+    sb = get_supabase()
+    accounts_res = await run_db(
+        lambda: sb.table("connected_accounts")
+        .select("id, provider, account_name, status, last_synced_at")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    accounts = accounts_res.data or []
+    bank_accounts = [
+        a
+        for a in accounts
+        if a.get("provider") in BANK_PROVIDERS and a.get("status") != "disconnected"
+    ]
+    active_bank_ids = {a["id"] for a in bank_accounts}
+
+    txn_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("id, account_id")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+        .not_.is_("qb_sync_status", "null")
+        .execute()
+    )
+    txns = txn_res.data or []
+    historical_count = sum(
+        1
+        for t in txns
+        if not active_bank_ids or (t.get("account_id") and t["account_id"] not in active_bank_ids)
+    )
+
+    qb_status = await get_connection_status(user_id)
+    bank_connected = len(bank_accounts) > 0
+
+    return {
+        "qb_connected": bool(qb_status.get("connected")),
+        "qb_environment": qb_status.get("environment"),
+        "qb_account_name": qb_status.get("account_name"),
+        "bank_connected": bank_connected,
+        "bank_accounts": [
+            {
+                "id": a["id"],
+                "account_name": a.get("account_name"),
+                "provider": a.get("provider"),
+                "last_synced_at": a.get("last_synced_at"),
+            }
+            for a in bank_accounts
+        ],
+        "historical_only": not bank_connected and len(txns) > 0,
+        "historical_count": historical_count if not bank_connected else 0,
+        "total_books_transactions": len(txns),
+    }
+
+
 async def get_summary(user_id: str) -> dict[str, Any]:
     sb = get_supabase()
     res = await run_db(
@@ -623,7 +683,8 @@ async def get_summary(user_id: str) -> dict[str, Any]:
         st = row.get("qb_sync_status") or "unknown"
         counts[st] = counts.get(st, 0) + 1
     automation = await get_user_automation(user_id)
-    return {"counts": counts, "automation": automation}
+    readiness = await get_books_readiness(user_id)
+    return {"counts": counts, "automation": automation, "readiness": readiness}
 
 
 async def exclude_transaction(user_id: str, transaction_id: str) -> dict[str, Any]:

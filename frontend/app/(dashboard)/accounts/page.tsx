@@ -26,6 +26,7 @@ interface Account {
   account_name: string;
   status: string;
   last_synced_at: string | null;
+  environment?: string;
 }
 
 export default function AccountsPage() {
@@ -460,8 +461,16 @@ function AccountsPageContent() {
                   className="group flex flex-1 items-center gap-3 p-4 sm:pr-2"
                 >
                   <div className="min-w-0 flex-1">
-                    <p className="font-medium text-white group-hover:text-blue-300">{acc.account_name}</p>
-                    <p className="text-sm capitalize text-slate-400">{acc.provider}</p>
+                    <p className="font-medium text-white group-hover:text-blue-300">
+                      {acc.account_name}
+                      {acc.provider === "quickbooks" && acc.environment === "sandbox" && (
+                        <span className="ml-2 text-xs font-normal text-amber-400">Sandbox test company</span>
+                      )}
+                    </p>
+                    <p className="text-sm capitalize text-slate-400">
+                      {acc.provider}
+                      {acc.environment === "sandbox" && acc.provider !== "quickbooks" && " · Sandbox"}
+                    </p>
                     <p className="mt-1 text-xs text-slate-600 group-hover:text-slate-500">View transactions</p>
                   </div>
                   <ChevronRight className="h-5 w-5 shrink-0 text-slate-600 transition-transform group-hover:translate-x-0.5 group-hover:text-blue-400" />

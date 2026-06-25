@@ -26,6 +26,8 @@ def test_transfer_excluded():
     result = classify_transaction(txn, mappings, {}, [], _coa_ids("35"))
     assert result["qb_sync_status"] == "excluded"
     assert result["qb_posting_type"] == "skip"
+    assert result["qb_confidence"] is None
+    assert "transfer" in (result.get("qb_confidence_reason") or "").lower()
 
 
 def test_transfer_expense_intent_not_excluded():

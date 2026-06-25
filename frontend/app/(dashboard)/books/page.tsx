@@ -29,7 +29,7 @@ import {
   type CoaAccount,
   type QbSyncStatus,
   type QueueGroup,
-  type QueueItem,
+  type BooksReadiness,
 } from "@/lib/books";
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
@@ -46,7 +46,24 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
 const selectClass =
   "h-9 min-w-[160px] rounded-md border border-slate-700 bg-slate-900 px-2 text-sm text-white";
 
-function confidenceBadge(confidence: number | null | undefined) {
+function confidenceBadge(
+  confidence: number | null | undefined,
+  syncStatus?: QbSyncStatus | null
+) {
+  if (syncStatus === "excluded") {
+    return (
+      <Badge className="bg-slate-600/20 text-slate-300" title="Detected as a bank transfer">
+        Transfer
+      </Badge>
+    );
+  }
+  if (syncStatus === "skipped") {
+    return (
+      <Badge className="bg-slate-600/20 text-slate-300" title="Not an expense transaction">
+        Skipped
+      </Badge>
+    );
+  }
   if (confidence == null) return <Badge variant="secondary">—</Badge>;
   if (confidence >= 0.9) return <Badge className="bg-emerald-600/20 text-emerald-400">High</Badge>;
   if (confidence >= 0.6) return <Badge className="bg-amber-600/20 text-amber-400">Medium</Badge>;
@@ -71,8 +88,11 @@ function BooksQueueContent() {
   const status = (searchParams.get("status") as QbSyncStatus) || "pending";
   const page = Number(searchParams.get("page") || "1");
   const view = searchParams.get("view") || "list";
+  const showHistorical = searchParams.get("historical") === "1";
 
   const [qbConnected, setQbConnected] = useState<boolean | null>(null);
+  const [qbEnvironment, setQbEnvironment] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<BooksReadiness | null>(null);
   const [items, setItems] = useState<QueueItem[]>([]);
   const [groups, setGroups] = useState<QueueGroup[]>([]);
   const [expenseCoa, setExpenseCoa] = useState<CoaAccount[]>([]);
@@ -92,7 +112,17 @@ function BooksQueueContent() {
     try {
       const qb = await getQuickBooksStatus();
       setQbConnected(qb.connected);
+      setQbEnvironment(qb.environment ?? null);
       if (!qb.connected) return;
+
+      const sum = await getBooksSummary();
+      setReadiness(sum.readiness ?? null);
+      setSummary(sum.counts);
+      setAutomation(sum.automation ?? null);
+
+      if (!sum.readiness?.bank_connected && !showHistorical) {
+        return;
+      }
 
       const coa = await listCoa();
       if (coa.total === 0) await syncCoa();
@@ -100,9 +130,8 @@ function BooksQueueContent() {
       setExpenseCoa(expense.items);
 
       await classifyTransactions();
-      const [queue, sum, auto, grp] = await Promise.all([
+      const [queue, auto, grp] = await Promise.all([
         getBooksQueue(status, page, 20),
-        getBooksSummary(),
         getAutomationSettings(),
         view === "grouped" && (status === "pending" || status === "needs_review")
           ? getBooksGroups(status)
@@ -110,15 +139,15 @@ function BooksQueueContent() {
       ]);
       setItems(queue.items);
       setTotalPages(queue.total_pages);
-      setSummary(sum.counts);
-      setAutomation(sum.automation ?? auto);
+      if (!sum.automation) setAutomation(auto);
+      setReadiness(sum.readiness ?? null);
       setGroups(grp);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to load books queue");
     } finally {
       setLoading(false);
     }
-  }, [status, page, view]);
+  }, [status, page, view, showHistorical]);
 
   useEffect(() => {
     load();
@@ -255,6 +284,59 @@ function BooksQueueContent() {
     );
   }
 
+  if (readiness && !readiness.bank_connected && !showHistorical) {
+    const excluded = readiness.historical_count > 0 ? summary.excluded ?? 0 : 0;
+    return (
+      <div className="page-enter space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Books Queue</h1>
+          <p className="text-slate-400">Connect a bank to sync transactions for posting to QuickBooks.</p>
+        </div>
+
+        {qbEnvironment === "sandbox" && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-200">
+            QuickBooks is connected as a <strong>sandbox test company</strong> — fine for testing, not your live books.
+          </div>
+        )}
+
+        <Card className="border-slate-800 bg-slate-900/50">
+          <CardHeader>
+            <CardTitle className="text-lg">No bank account connected</CardTitle>
+          </CardHeader>
+          <div className="space-y-4 px-6 pb-6">
+            <p className="text-sm text-slate-400">
+              Books needs a linked bank (Mono or Plaid) to import transactions. QuickBooks alone only provides your chart
+              of accounts — it does not supply bank debits.
+            </p>
+            <Button asChild>
+              <Link href="/accounts">Connect a bank account</Link>
+            </Button>
+            {readiness.historical_only && (
+              <div className="rounded-lg border border-slate-700 bg-slate-950/50 p-4 text-sm text-slate-300">
+                <p>
+                  You have <strong>{readiness.total_books_transactions}</strong> transactions from a previously
+                  connected bank
+                  {excluded > 0 && (
+                    <>
+                      {" "}
+                      — <strong>{excluded}</strong> were auto-detected as NIP/bank transfers and excluded from posting
+                    </>
+                  )}
+                  . This is real synced data, not dummy placeholders.
+                </p>
+                <Button asChild variant="outline" className="mt-3">
+                  <Link href={`/books?status=excluded&historical=1`}>View historical transactions</Link>
+                </Button>
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  const historicalQuery = showHistorical ? "&historical=1" : "";
+
   return (
     <div className="page-enter space-y-6">
       <div>
@@ -263,6 +345,21 @@ function BooksQueueContent() {
           Approve transactions to train FinSight. High-confidence patterns can auto-post overnight.
         </p>
       </div>
+
+      {showHistorical && readiness?.historical_only && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+          <span>
+            Viewing historical transactions from a disconnected bank. Connect a bank on{" "}
+            <Link href="/accounts" className="underline">
+              Accounts
+            </Link>{" "}
+            to sync new activity.
+          </span>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/books">Back</Link>
+          </Button>
+        </div>
+      )}
 
       {automation && (
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300">
@@ -299,7 +396,7 @@ function BooksQueueContent() {
           return (
             <Link
               key={tab.id}
-              href={`/books?status=${tab.id}&view=${view}`}
+              href={`/books?status=${tab.id}&view=${view}${historicalQuery}`}
               className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                 active
                   ? "bg-blue-600/20 text-blue-400 ring-1 ring-blue-500/30"
@@ -312,7 +409,7 @@ function BooksQueueContent() {
           );
         })}
         <Link
-          href={`/books?status=${status}&view=${view === "grouped" ? "list" : "grouped"}`}
+          href={`/books?status=${status}&view=${view === "grouped" ? "list" : "grouped"}${historicalQuery}`}
           className="rounded-lg bg-slate-800/50 px-3 py-1.5 text-sm text-slate-400 hover:text-white"
         >
           {view === "grouped" ? "List view" : "Grouped by payee"}
@@ -338,7 +435,7 @@ function BooksQueueContent() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {confidenceBadge(g.qb_confidence)}
+                {confidenceBadge(g.qb_confidence, status)}
                 <Button
                   size="sm"
                   disabled={actionLoading === `group-${g.payee_pattern}`}
@@ -427,9 +524,13 @@ function BooksQueueContent() {
                     )}
                   </td>
                   <td className="p-3" title={row.qb_confidence_reason ?? undefined}>
-                    {confidenceBadge(row.qb_confidence)}
+                    {confidenceBadge(row.qb_confidence, row.qb_sync_status)}
                   </td>
-                  <td className="p-3 text-slate-400">{methodLabel(row.qb_suggestion_method) ?? "—"}</td>
+                  <td className="p-3 text-slate-400">
+                    {row.qb_sync_status === "excluded"
+                      ? "Transfer"
+                      : methodLabel(row.qb_suggestion_method) ?? "—"}
+                  </td>
                   <td className="p-3 text-right font-medium text-white">
                     {formatCurrency(row.amount, row.currency)}
                   </td>
@@ -485,7 +586,7 @@ function BooksQueueContent() {
       {totalPages > 1 && (
         <div className="flex justify-center gap-2">
           {page > 1 && (
-            <Link href={`/books?status=${status}&page=${page - 1}&view=${view}`}>
+            <Link href={`/books?status=${status}&page=${page - 1}&view=${view}${historicalQuery}`}>
               <Button variant="outline" size="sm">
                 Previous
               </Button>
@@ -495,7 +596,7 @@ function BooksQueueContent() {
             Page {page} of {totalPages}
           </span>
           {page < totalPages && (
-            <Link href={`/books?status=${status}&page=${page + 1}&view=${view}`}>
+            <Link href={`/books?status=${status}&page=${page + 1}&view=${view}${historicalQuery}`}>
               <Button variant="outline" size="sm">
                 Next
               </Button>
