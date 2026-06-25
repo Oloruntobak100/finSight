@@ -82,9 +82,6 @@ export interface BooksReadiness {
     provider?: string;
     last_synced_at?: string | null;
   }>;
-  historical_only: boolean;
-  historical_count: number;
-  total_books_transactions: number;
   qb_environment?: string | null;
   qb_account_name?: string | null;
 }

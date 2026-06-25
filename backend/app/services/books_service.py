@@ -434,6 +434,10 @@ async def classify_user_transactions(
     transaction_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
+    _, active_bank_ids = await _active_bank_accounts(user_id)
+    if not active_bank_ids:
+        return {"classified": 0}
+
     mappings = await get_mappings(user_id)
     user_rules = await load_user_category_rules(user_id, sb)
     coa = await list_coa(user_id)
@@ -475,6 +479,8 @@ async def classify_user_transactions(
             .execute()
         )
         txns = (res.data or []) + (null_res.data or [])
+
+    txns = [t for t in txns if t.get("account_id") in active_bank_ids]
 
     provider = _resolve_llm_provider()
     classified = 0
@@ -532,11 +538,16 @@ async def get_queue(
     limit: int = 20,
 ) -> dict[str, Any]:
     sb = get_supabase()
+    bank_accounts, active_bank_ids = await _active_bank_accounts(user_id)
+    if not active_bank_ids:
+        return {"items": [], "total": 0, "page": page, "limit": limit, "total_pages": 1}
+
     query = (
         sb.table("transactions")
         .select("*", count="exact")
         .eq("user_id", user_id)
         .in_("source_provider", list(BANK_PROVIDERS))
+        .in_("account_id", list(active_bank_ids))
         .not_.is_("qb_sync_status", "null")
     )
     if status:
@@ -549,13 +560,7 @@ async def get_queue(
         .execute()
     )
 
-    accounts_res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("id, account_name")
-        .eq("user_id", user_id)
-        .execute()
-    )
-    bank_map = {r["id"]: r.get("account_name") for r in (accounts_res.data or [])}
+    bank_map = {r["id"]: r.get("account_name") for r in bank_accounts}
 
     items = []
     for row in res.data or []:
@@ -577,11 +582,16 @@ async def get_queue_groups(
     status: str = "pending",
 ) -> list[dict[str, Any]]:
     sb = get_supabase()
+    _, active_bank_ids = await _active_bank_accounts(user_id)
+    if not active_bank_ids:
+        return []
+
     res = await run_db(
         lambda: sb.table("transactions")
         .select("*")
         .eq("user_id", user_id)
         .in_("source_provider", list(BANK_PROVIDERS))
+        .in_("account_id", list(active_bank_ids))
         .eq("qb_sync_status", status)
         .execute()
     )
@@ -610,49 +620,34 @@ async def get_queue_groups(
     return sorted(groups.values(), key=lambda x: -x["count"])
 
 
-async def get_books_readiness(user_id: str) -> dict[str, Any]:
-    """Whether Books can sync new bank data vs showing historical rows only."""
-    from app.config import settings
-    from app.services.quickbooks_service import get_connection_status
-
+async def _active_bank_accounts(user_id: str) -> tuple[list[dict[str, Any]], set[str]]:
+    """Connected Plaid/Mono accounts only — Books uses realtime linked banks."""
     sb = get_supabase()
-    accounts_res = await run_db(
+    res = await run_db(
         lambda: sb.table("connected_accounts")
         .select("id, provider, account_name, status, last_synced_at")
         .eq("user_id", user_id)
         .execute()
     )
-    accounts = accounts_res.data or []
-    bank_accounts = [
+    accounts = [
         a
-        for a in accounts
+        for a in (res.data or [])
         if a.get("provider") in BANK_PROVIDERS and a.get("status") != "disconnected"
     ]
-    active_bank_ids = {a["id"] for a in bank_accounts}
+    return accounts, {a["id"] for a in accounts}
 
-    txn_res = await run_db(
-        lambda: sb.table("transactions")
-        .select("id, account_id")
-        .eq("user_id", user_id)
-        .in_("source_provider", list(BANK_PROVIDERS))
-        .not_.is_("qb_sync_status", "null")
-        .execute()
-    )
-    txns = txn_res.data or []
-    historical_count = sum(
-        1
-        for t in txns
-        if not active_bank_ids or (t.get("account_id") and t["account_id"] not in active_bank_ids)
-    )
 
+async def get_books_readiness(user_id: str) -> dict[str, Any]:
+    from app.services.quickbooks_service import get_connection_status
+
+    bank_accounts, _ = await _active_bank_accounts(user_id)
     qb_status = await get_connection_status(user_id)
-    bank_connected = len(bank_accounts) > 0
 
     return {
         "qb_connected": bool(qb_status.get("connected")),
         "qb_environment": qb_status.get("environment"),
         "qb_account_name": qb_status.get("account_name"),
-        "bank_connected": bank_connected,
+        "bank_connected": len(bank_accounts) > 0,
         "bank_accounts": [
             {
                 "id": a["id"],
@@ -662,26 +657,26 @@ async def get_books_readiness(user_id: str) -> dict[str, Any]:
             }
             for a in bank_accounts
         ],
-        "historical_only": not bank_connected and len(txns) > 0,
-        "historical_count": historical_count if not bank_connected else 0,
-        "total_books_transactions": len(txns),
     }
 
 
 async def get_summary(user_id: str) -> dict[str, Any]:
     sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("transactions")
-        .select("qb_sync_status")
-        .eq("user_id", user_id)
-        .in_("source_provider", list(BANK_PROVIDERS))
-        .not_.is_("qb_sync_status", "null")
-        .execute()
-    )
+    _, active_bank_ids = await _active_bank_accounts(user_id)
     counts: dict[str, int] = {}
-    for row in res.data or []:
-        st = row.get("qb_sync_status") or "unknown"
-        counts[st] = counts.get(st, 0) + 1
+    if active_bank_ids:
+        res = await run_db(
+            lambda: sb.table("transactions")
+            .select("qb_sync_status")
+            .eq("user_id", user_id)
+            .in_("source_provider", list(BANK_PROVIDERS))
+            .in_("account_id", list(active_bank_ids))
+            .not_.is_("qb_sync_status", "null")
+            .execute()
+        )
+        for row in res.data or []:
+            st = row.get("qb_sync_status") or "unknown"
+            counts[st] = counts.get(st, 0) + 1
     automation = await get_user_automation(user_id)
     readiness = await get_books_readiness(user_id)
     return {"counts": counts, "automation": automation, "readiness": readiness}

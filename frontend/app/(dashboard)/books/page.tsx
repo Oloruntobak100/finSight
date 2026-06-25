@@ -88,7 +88,6 @@ function BooksQueueContent() {
   const status = (searchParams.get("status") as QbSyncStatus) || "pending";
   const page = Number(searchParams.get("page") || "1");
   const view = searchParams.get("view") || "list";
-  const showHistorical = searchParams.get("historical") === "1";
 
   const [qbConnected, setQbConnected] = useState<boolean | null>(null);
   const [qbEnvironment, setQbEnvironment] = useState<string | null>(null);
@@ -120,7 +119,7 @@ function BooksQueueContent() {
       setSummary(sum.counts);
       setAutomation(sum.automation ?? null);
 
-      if (!sum.readiness?.bank_connected && !showHistorical) {
+      if (!sum.readiness?.bank_connected) {
         return;
       }
 
@@ -147,7 +146,7 @@ function BooksQueueContent() {
     } finally {
       setLoading(false);
     }
-  }, [status, page, view, showHistorical]);
+  }, [status, page, view]);
 
   useEffect(() => {
     load();
@@ -284,8 +283,7 @@ function BooksQueueContent() {
     );
   }
 
-  if (readiness && !readiness.bank_connected && !showHistorical) {
-    const excluded = readiness.historical_count > 0 ? summary.excluded ?? 0 : 0;
+  if (readiness && !readiness.bank_connected) {
     return (
       <div className="page-enter space-y-6">
         <div>
@@ -305,37 +303,17 @@ function BooksQueueContent() {
           </CardHeader>
           <div className="space-y-4 px-6 pb-6">
             <p className="text-sm text-slate-400">
-              Books needs a linked bank (Mono or Plaid) to import transactions. QuickBooks alone only provides your chart
-              of accounts — it does not supply bank debits.
+              Books shows transactions from your linked bank only. Connect Mono or Plaid to import live debits, then map
+              accounts and approve for QuickBooks.
             </p>
             <Button asChild>
               <Link href="/accounts">Connect a bank account</Link>
             </Button>
-            {readiness.historical_only && (
-              <div className="rounded-lg border border-slate-700 bg-slate-950/50 p-4 text-sm text-slate-300">
-                <p>
-                  You have <strong>{readiness.total_books_transactions}</strong> transactions from a previously
-                  connected bank
-                  {excluded > 0 && (
-                    <>
-                      {" "}
-                      — <strong>{excluded}</strong> were auto-detected as NIP/bank transfers and excluded from posting
-                    </>
-                  )}
-                  . This is real synced data, not dummy placeholders.
-                </p>
-                <Button asChild variant="outline" className="mt-3">
-                  <Link href={`/books?status=excluded&historical=1`}>View historical transactions</Link>
-                </Button>
-              </div>
-            )}
           </div>
         </Card>
       </div>
     );
   }
-
-  const historicalQuery = showHistorical ? "&historical=1" : "";
 
   return (
     <div className="page-enter space-y-6">
@@ -345,21 +323,6 @@ function BooksQueueContent() {
           Approve transactions to train FinSight. High-confidence patterns can auto-post overnight.
         </p>
       </div>
-
-      {showHistorical && readiness?.historical_only && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
-          <span>
-            Viewing historical transactions from a disconnected bank. Connect a bank on{" "}
-            <Link href="/accounts" className="underline">
-              Accounts
-            </Link>{" "}
-            to sync new activity.
-          </span>
-          <Button asChild variant="outline" size="sm">
-            <Link href="/books">Back</Link>
-          </Button>
-        </div>
-      )}
 
       {automation && (
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300">
@@ -396,7 +359,7 @@ function BooksQueueContent() {
           return (
             <Link
               key={tab.id}
-              href={`/books?status=${tab.id}&view=${view}${historicalQuery}`}
+              href={`/books?status=${tab.id}&view=${view}`}
               className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                 active
                   ? "bg-blue-600/20 text-blue-400 ring-1 ring-blue-500/30"
@@ -409,7 +372,7 @@ function BooksQueueContent() {
           );
         })}
         <Link
-          href={`/books?status=${status}&view=${view === "grouped" ? "list" : "grouped"}${historicalQuery}`}
+          href={`/books?status=${status}&view=${view === "grouped" ? "list" : "grouped"}`}
           className="rounded-lg bg-slate-800/50 px-3 py-1.5 text-sm text-slate-400 hover:text-white"
         >
           {view === "grouped" ? "List view" : "Grouped by payee"}
@@ -586,7 +549,7 @@ function BooksQueueContent() {
       {totalPages > 1 && (
         <div className="flex justify-center gap-2">
           {page > 1 && (
-            <Link href={`/books?status=${status}&page=${page - 1}&view=${view}${historicalQuery}`}>
+            <Link href={`/books?status=${status}&page=${page - 1}&view=${view}`}>
               <Button variant="outline" size="sm">
                 Previous
               </Button>
@@ -596,7 +559,7 @@ function BooksQueueContent() {
             Page {page} of {totalPages}
           </span>
           {page < totalPages && (
-            <Link href={`/books?status=${status}&page=${page + 1}&view=${view}${historicalQuery}`}>
+            <Link href={`/books?status=${status}&page=${page + 1}&view=${view}`}>
               <Button variant="outline" size="sm">
                 Next
               </Button>

@@ -141,9 +141,6 @@ class BooksReadiness(BaseModel):
     qb_connected: bool
     bank_connected: bool
     bank_accounts: list[dict[str, Any]] = []
-    historical_only: bool = False
-    historical_count: int = 0
-    total_books_transactions: int = 0
     qb_environment: Optional[str] = None
     qb_account_name: Optional[str] = None
 
