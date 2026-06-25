@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api";
+import { apiFetch, BOOKS_CLASSIFY_TIMEOUT_MS, type ApiFetchOptions } from "@/lib/api";
 
 export type QbSyncStatus =
   | "pending"
@@ -139,10 +139,14 @@ export async function upsertMapping(body: Omit<AccountMapping, "id">): Promise<A
   });
 }
 
-export async function classifyTransactions(transactionIds?: string[]): Promise<{ classified: number }> {
+export async function classifyTransactions(
+  transactionIds?: string[],
+  options?: Pick<ApiFetchOptions, "timeoutMs">
+): Promise<{ classified: number }> {
   return apiFetch("/books/classify", {
     method: "POST",
     body: JSON.stringify({ transaction_ids: transactionIds ?? null }),
+    timeoutMs: options?.timeoutMs ?? BOOKS_CLASSIFY_TIMEOUT_MS,
   });
 }
 

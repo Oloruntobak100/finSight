@@ -457,35 +457,51 @@ async def classify_user_transactions(
             .execute()
         )
         txns = res.data or []
+        txns = [t for t in txns if t.get("account_id") in active_bank_ids]
     else:
         res = await run_db(
             lambda: sb.table("transactions")
             .select("*")
             .eq("user_id", user_id)
             .in_("source_provider", list(BANK_PROVIDERS))
-            .eq("transaction_type", "debit")
-            .in_("qb_sync_status", ["pending", "needs_review", "auto_approved"])
-            .limit(500)
-            .execute()
-        )
-        null_res = await run_db(
-            lambda: sb.table("transactions")
-            .select("*")
-            .eq("user_id", user_id)
-            .in_("source_provider", list(BANK_PROVIDERS))
+            .in_("account_id", list(active_bank_ids))
             .eq("transaction_type", "debit")
             .is_("qb_sync_status", "null")
-            .limit(500)
+            .limit(200)
             .execute()
         )
-        txns = (res.data or []) + (null_res.data or [])
-
-    txns = [t for t in txns if t.get("account_id") in active_bank_ids]
+        txns = res.data or []
 
     provider = _resolve_llm_provider()
     classified = 0
     for txn in txns:
         if txn.get("qb_sync_status") == "posted":
+            continue
+        if not transaction_ids and txn.get("qb_sync_status") in (
+            "excluded",
+            "skipped",
+            "failed",
+            "posted",
+        ):
+            continue
+
+        if _should_exclude_transfer(txn):
+            update = classify_transaction(
+                txn,
+                mappings,
+                user_rules,
+                expense_accounts,
+                coa_ids,
+                automation=automation,
+            )
+            await run_db(
+                lambda t=txn["id"], u=update: sb.table("transactions")
+                .update(u)
+                .eq("id", t)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            classified += 1
             continue
 
         fp = extract_fingerprint(txn)

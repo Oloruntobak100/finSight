@@ -12,6 +12,7 @@ const API_BASE = normalizeApiBase(process.env.NEXT_PUBLIC_FASTAPI_URL);
 const AUTH_TIMEOUT_MS = 8_000;
 const FETCH_TIMEOUT_MS = 20_000;
 export const BANKING_TIMEOUT_MS = 90_000;
+export const BOOKS_CLASSIFY_TIMEOUT_MS = 120_000;
 
 export interface ApiFetchOptions extends RequestInit {
   timeoutMs?: number;

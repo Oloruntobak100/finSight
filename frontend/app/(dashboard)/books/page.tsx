@@ -104,49 +104,87 @@ function BooksQueueContent() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [classifying, setClassifying] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const qb = await getQuickBooksStatus();
-      setQbConnected(qb.connected);
-      setQbEnvironment(qb.environment ?? null);
-      if (!qb.connected) return;
-
-      const sum = await getBooksSummary();
-      setReadiness(sum.readiness ?? null);
-      setSummary(sum.counts);
-      setAutomation(sum.automation ?? null);
-
-      if (!sum.readiness?.bank_connected) {
-        return;
-      }
-
-      const coa = await listCoa();
-      if (coa.total === 0) await syncCoa();
-      const expense = await listCoa("Expense");
-      setExpenseCoa(expense.items);
-
-      await classifyTransactions();
-      const [queue, auto, grp] = await Promise.all([
-        getBooksQueue(status, page, 20),
-        getAutomationSettings(),
-        view === "grouped" && (status === "pending" || status === "needs_review")
-          ? getBooksGroups(status)
+  const refreshQueue = useCallback(
+    async (statusFilter: QbSyncStatus, pageNum: number, viewMode: string) => {
+      const [queue, sum, grp] = await Promise.all([
+        getBooksQueue(statusFilter, pageNum, 20),
+        getBooksSummary(),
+        viewMode === "grouped" && (statusFilter === "pending" || statusFilter === "needs_review")
+          ? getBooksGroups(statusFilter)
           : Promise.resolve([]),
       ]);
       setItems(queue.items);
       setTotalPages(queue.total_pages);
-      if (!sum.automation) setAutomation(auto);
+      setSummary(sum.counts);
       setReadiness(sum.readiness ?? null);
       setGroups(grp);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Failed to load books queue");
+    },
+    []
+  );
+
+  const runBackgroundClassify = useCallback(async () => {
+    setClassifying(true);
+    try {
+      await classifyTransactions();
+      await refreshQueue(status, page, view);
+    } catch {
+      /* non-blocking — queue already visible */
     } finally {
-      setLoading(false);
+      setClassifying(false);
     }
-  }, [status, page, view]);
+  }, [status, page, view, refreshQueue]);
+
+  const load = useCallback(
+    async (opts?: { classify?: boolean }) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const qb = await getQuickBooksStatus();
+        setQbConnected(qb.connected);
+        setQbEnvironment(qb.environment ?? null);
+        if (!qb.connected) return;
+
+        const sum = await getBooksSummary();
+        setReadiness(sum.readiness ?? null);
+        setSummary(sum.counts);
+        setAutomation(sum.automation ?? null);
+
+        if (!sum.readiness?.bank_connected) {
+          return;
+        }
+
+        const [coa, expense, auto] = await Promise.all([
+          listCoa(),
+          listCoa("Expense"),
+          getAutomationSettings(),
+        ]);
+        if (coa.total === 0) await syncCoa();
+        setExpenseCoa(expense.items);
+        if (!sum.automation) setAutomation(auto);
+
+        await refreshQueue(status, page, view);
+
+        if (opts?.classify) {
+          setClassifying(true);
+          try {
+            await classifyTransactions();
+            await refreshQueue(status, page, view);
+          } finally {
+            setClassifying(false);
+          }
+        } else {
+          void runBackgroundClassify();
+        }
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to load books queue");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [status, page, view, refreshQueue, runBackgroundClassify]
+  );
 
   useEffect(() => {
     load();
@@ -377,7 +415,14 @@ function BooksQueueContent() {
         >
           {view === "grouped" ? "List view" : "Grouped by payee"}
         </Link>
-        <Button variant="ghost" size="sm" onClick={() => load()} className="ml-auto text-slate-400">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => load({ classify: true })}
+          loading={classifying}
+          loadingLabel="Classifying…"
+          className="ml-auto text-slate-400"
+        >
           <RefreshCw className="mr-1 h-3.5 w-3.5" />
           Refresh
         </Button>
