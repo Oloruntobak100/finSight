@@ -18,7 +18,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { NavProgress } from "@/components/dashboard/nav-progress";
-import { Spinner } from "@/components/ui/spinner";
+import { LoaderIcon } from "@/components/ui/page-loader";
 import { cn } from "@/lib/utils";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
@@ -66,7 +66,7 @@ function NavItemInner({
     >
       <Icon className={cn("h-4 w-4 shrink-0", pending && "text-blue-400")} />
       <span className="flex-1">{label}</span>
-      {pending && <Spinner size="sm" className="text-blue-400" />}
+      {pending && <LoaderIcon />}
     </span>
   );
 }

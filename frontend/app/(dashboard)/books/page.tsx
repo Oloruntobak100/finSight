@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AlertCircle, BookOpen, RefreshCw } from "lucide-react";
@@ -8,7 +8,7 @@ import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connec
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { PageLoader } from "@/components/ui/page-loader";
 import {
   approveBulk,
   approveTransaction,
@@ -154,7 +154,10 @@ function BooksQueueContent() {
   const [queueTotal, setQueueTotal] = useState(0);
   const [classifyProgress, setClassifyProgress] = useState<string | null>(null);
   const [automation, setAutomation] = useState<AutomationSettings | null>(null);
+  const [bootstrapped, setBootstrapped] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const skipQueueRefresh = useRef(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -210,65 +213,116 @@ function BooksQueueContent() {
     }
   }, [status, page, view, refreshQueue]);
 
-  const runBackgroundClassify = useCallback(async () => {
-    void runClassifyAll();
-  }, [runClassifyAll]);
-
-  const load = useCallback(
+  const refreshData = useCallback(
     async (opts?: { classify?: boolean }) => {
+      setError(null);
+      try {
+        if (opts?.classify) {
+          await runClassifyAll();
+          return;
+        }
+        const sum = await getBooksSummary();
+        setReadiness(sum.readiness ?? null);
+        setSummary(sum.counts);
+        setCoverage(sum.coverage ?? null);
+        if (sum.automation) setAutomation(sum.automation);
+        await refreshQueue(status, page, view);
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to refresh books queue");
+      }
+    },
+    [status, page, view, refreshQueue, runClassifyAll]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrap() {
       setLoading(true);
       setError(null);
       try {
         const qb = await getQuickBooksStatus();
+        if (cancelled) return;
         setQbConnected(qb.connected);
         setQbEnvironment(qb.environment ?? null);
         if (!qb.connected) return;
 
         const sum = await getBooksSummary();
+        if (cancelled) return;
         setReadiness(sum.readiness ?? null);
         setSummary(sum.counts);
         setCoverage(sum.coverage ?? null);
         setAutomation(sum.automation ?? null);
 
-        if (!sum.readiness?.bank_connected) {
-          return;
-        }
+        if (!sum.readiness?.bank_connected) return;
 
-        const [coa, expense, income, auto] = await Promise.all([
+        const needsGroups =
+          view === "grouped" && (status === "pending" || status === "needs_review");
+
+        const [coa, expense, income, auto, queue, grp] = await Promise.all([
           listCoa(),
           listCoa("Expense"),
           listCoa("Income"),
-          getAutomationSettings(),
+          sum.automation ? Promise.resolve(null) : getAutomationSettings(),
+          getBooksQueue(status, page, 20),
+          needsGroups ? getBooksGroups(status) : Promise.resolve([] as QueueGroup[]),
         ]);
+        if (cancelled) return;
+
         if (coa.total === 0) await syncCoa();
+        if (cancelled) return;
+
         setExpenseCoa(expense.items);
         setIncomeCoa(income.items);
-        if (!sum.automation) setAutomation(auto);
-
-        await refreshQueue(status, page, view);
-
-        if (opts?.classify) {
-          setClassifying(true);
-          try {
-            await runClassifyAll();
-          } finally {
-            setClassifying(false);
-          }
-        } else {
-          void runBackgroundClassify();
-        }
+        if (auto) setAutomation(auto);
+        setItems(queue.items);
+        setTotalPages(queue.total_pages);
+        setQueueTotal(queue.total);
+        setGroups(grp);
+        setBootstrapped(true);
       } catch (e) {
-        setError(e instanceof ApiError ? e.message : "Failed to load books queue");
+        if (!cancelled) {
+          setError(e instanceof ApiError ? e.message : "Failed to load books queue");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    },
-    [status, page, view, refreshQueue, runBackgroundClassify, runClassifyAll]
-  );
+    }
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+    // Bootstrap once on mount; queue filters are applied via the initial searchParams snapshot above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!bootstrapped || !qbConnected) return;
+    if (skipQueueRefresh.current) {
+      skipQueueRefresh.current = false;
+      return;
+    }
+
+    let cancelled = false;
+    async function loadQueue() {
+      setQueueLoading(true);
+      try {
+        await refreshQueue(status, page, view);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof ApiError ? e.message : "Failed to load queue");
+        }
+      } finally {
+        if (!cancelled) setQueueLoading(false);
+      }
+    }
+
+    void loadQueue();
+    return () => {
+      cancelled = true;
+    };
+  }, [status, page, view, bootstrapped, qbConnected, refreshQueue]);
 
   async function handleApprove(row: QueueItem, post = true) {
     const accountId = accountEdits[row.id] || row.qb_account_id;
@@ -281,7 +335,7 @@ function BooksQueueContent() {
     try {
       await approveTransaction(row.id, accountId, post);
       setInfo(post ? "Approved and posted to QuickBooks" : "Approved — training saved");
-      await load();
+      await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Approve failed");
     } finally {
@@ -302,7 +356,7 @@ function BooksQueueContent() {
         post: true,
       });
       setInfo(`Approved ${result.approved} transactions in group`);
-      await load();
+      await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Group approve failed");
     } finally {
@@ -315,7 +369,7 @@ function BooksQueueContent() {
     try {
       await postTransaction(id);
       setInfo("Transaction posted to QuickBooks");
-      await load();
+      await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Post failed");
     } finally {
@@ -330,7 +384,7 @@ function BooksQueueContent() {
       const result = await postTransactionsBulk([...selected]);
       setInfo(`Posted ${result.posted}, skipped ${result.skipped}, failed ${result.failed}`);
       setSelected(new Set());
-      await load();
+      await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Bulk post failed");
     } finally {
@@ -342,7 +396,7 @@ function BooksQueueContent() {
     setActionLoading(id);
     try {
       await excludeTransaction(id);
-      await load();
+      await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Exclude failed");
     } finally {
@@ -355,7 +409,7 @@ function BooksQueueContent() {
     try {
       await setPostingIntent(id, intent);
       setInfo(`Marked as ${intent} — re-classifying`);
-      await load({ classify: true });
+      await refreshData({ classify: true });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Intent update failed");
     } finally {
@@ -373,13 +427,7 @@ function BooksQueueContent() {
   }
 
   if (qbConnected === null || loading) {
-    return (
-      <div className="space-y-3">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <Skeleton key={i} className="h-10 w-full" />
-        ))}
-      </div>
-    );
+    return <PageLoader message="Loading books…" />;
   }
 
   if (!qbConnected) {
@@ -513,7 +561,7 @@ function BooksQueueContent() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => load({ classify: true })}
+          onClick={() => refreshData({ classify: true })}
           loading={classifying}
           loadingLabel="Classifying…"
           className="ml-auto text-slate-400"
@@ -569,8 +617,15 @@ function BooksQueueContent() {
         </Button>
       )}
 
-      <div className="overflow-x-auto rounded-xl border border-slate-800/70">
-        <table className="w-full min-w-[960px] text-sm">
+      <div className="relative overflow-x-auto rounded-xl border border-slate-800/70">
+        {queueLoading && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/55 backdrop-blur-[1px]">
+            <PageLoader variant="compact" message="" />
+          </div>
+        )}
+        <table
+          className={`w-full min-w-[960px] text-sm transition-opacity ${queueLoading ? "pointer-events-none opacity-40" : ""}`}
+        >
           <thead>
             <tr className="border-b border-slate-800 text-left text-slate-500">
               {(status === "pending" || status === "needs_review") && (
@@ -746,7 +801,7 @@ function BooksQueueContent() {
                           size="sm"
                           variant="outline"
                           disabled={actionLoading === row.id || classifying}
-                          onClick={() => load({ classify: true })}
+                          onClick={() => refreshData({ classify: true })}
                         >
                           Classify
                         </Button>
@@ -793,7 +848,7 @@ function BooksQueueContent() {
 
 export default function BooksPage() {
   return (
-    <Suspense fallback={<Skeleton className="h-48 w-full" />}>
+    <Suspense fallback={<PageLoader message="Loading books…" />}>
       <BooksQueueContent />
     </Suspense>
   );

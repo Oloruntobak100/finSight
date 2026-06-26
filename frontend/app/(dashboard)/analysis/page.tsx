@@ -21,7 +21,7 @@ import { AnalysisFiltersBar } from "@/components/analysis/analysis-filters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable, type DataTableColumn } from "@/components/ui/data-table";
-import { Skeleton } from "@/components/ui/skeleton";
+import { PageLoader } from "@/components/ui/page-loader";
 import {
   buildAnalysisQueryString,
   filterSummaryChips,
@@ -225,13 +225,7 @@ export default function AnalysisPage() {
   );
 
   if (loading && !data) {
-    return (
-      <div className="page-enter space-y-5">
-        <Skeleton className="h-8 w-56" />
-        <Skeleton className="h-24 rounded-xl" />
-        <Skeleton className="h-96 rounded-xl" />
-      </div>
-    );
+    return <PageLoader message="Loading analysis…" />;
   }
 
   return (

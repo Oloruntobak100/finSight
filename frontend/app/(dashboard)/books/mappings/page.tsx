@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageLoader } from "@/components/ui/page-loader";
 import { Spinner } from "@/components/ui/spinner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
@@ -128,11 +129,7 @@ export default function BooksMappingsPage() {
   }
 
   if (loading) {
-    return (
-      <div className="flex justify-center py-12">
-        <Spinner />
-      </div>
-    );
+    return <PageLoader message="Loading mappings…" />;
   }
 
   if (!qbConnected) {
