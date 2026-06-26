@@ -197,7 +197,7 @@ export async function approveBulk(body: {
 
 export async function setPostingIntent(
   transactionId: string,
-  intent: "expense" | "transfer" | "personal"
+  intent: "expense" | "income" | "transfer" | "personal" | "fee"
 ): Promise<unknown> {
   return apiFetch("/books/intent", {
     method: "POST",

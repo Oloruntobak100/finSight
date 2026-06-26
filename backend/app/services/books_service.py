@@ -31,6 +31,13 @@ from app.services.posting_rag_service import (
     store_posting_memory,
 )
 from app.services.quickbooks_service import qb_company_post_json, sync_chart_of_accounts
+from app.services.transaction_posting_utils import (
+    PostingKind,
+    default_fee_account_names,
+    detect_posting_kind,
+    is_bank_fee,
+    posting_type_for_kind,
+)
 from app.services.transfer_utils import is_transfer
 
 logger = logging.getLogger(__name__)
@@ -150,8 +157,29 @@ def _mapping_lookup(mappings: list[dict[str, Any]], mapping_type: str, key: str)
     return None
 
 
-def _coa_name(coa: list[dict[str, Any]], qb_account_id: str) -> str | None:
+def _accounts_for_kind(coa: list[dict[str, Any]], kind: PostingKind) -> list[dict[str, Any]]:
+    if kind == "income":
+        return [a for a in coa if a.get("account_type") == "Income"]
+    return [a for a in coa if a.get("account_type") == "Expense"]
+
+
+def _default_fee_account(coa: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for name in default_fee_account_names():
+        for row in coa:
+            if (row.get("name") or "").lower() == name.lower():
+                return row
     for row in coa:
+        if row.get("account_type") == "Expense" and "bank" in (row.get("name") or "").lower():
+            return row
+    return None
+
+
+def _coa_name(coa: list[dict[str, Any]], qb_account_id: str) -> str | None:
+    return _coa_name_from_list(coa, qb_account_id)
+
+
+def _coa_name_from_list(accounts: list[dict[str, Any]], qb_account_id: str) -> str | None:
+    for row in accounts:
         if row.get("qb_account_id") == qb_account_id:
             return row.get("name")
     return None
@@ -201,10 +229,12 @@ async def log_posting_decision(
 
 async def _llm_classify(
     txn: dict[str, Any],
-    expense_accounts: list[dict[str, Any]],
+    target_accounts: list[dict[str, Any]],
     user_id: str,
+    *,
+    posting_label: str = "expense",
 ) -> tuple[str | None, str | None, float, str | None]:
-    if not expense_accounts:
+    if not target_accounts:
         return None, None, 0.0, None
 
     provider = _resolve_llm_provider()
@@ -213,7 +243,7 @@ async def _llm_classify(
 
     accounts_text = "\n".join(
         f"- id={a['qb_account_id']}: {a['name']} ({a.get('account_sub_type') or a.get('account_type')})"
-        for a in expense_accounts[:80]
+        for a in target_accounts[:80]
     )
     history = await recent_decisions_context(user_id)
     rag_hits = await search_similar_memories(user_id, txn, threshold=0.70)
@@ -229,7 +259,7 @@ async def _llm_classify(
 
 {rag_block}
 
-Pick the best QuickBooks expense account for this bank transaction.
+Pick the best QuickBooks {posting_label} account for this bank transaction.
 Return ONLY valid JSON: {{"account_id": "<qb_account_id>", "confidence": 0.0-1.0, "reason": "one line"}}
 
 Transaction:
@@ -239,9 +269,9 @@ Transaction:
 - payee_pattern: {txn.get('payee_pattern')}
 - category: {txn.get('category')}
 - amount: {txn.get('amount')}
-- type: {txn.get('transaction_type')}
+- direction: {txn.get('transaction_type')}
 
-Expense accounts:
+Accounts:
 {accounts_text}"""
 
     try:
@@ -267,30 +297,46 @@ Expense accounts:
         account_id = str(parsed.get("account_id", "")) or None
         confidence = float(parsed.get("confidence", 0.7))
         reason = parsed.get("reason")
-        name = _coa_name(expense_accounts, account_id) if account_id else None
+        name = _coa_name_from_list(target_accounts, account_id) if account_id else None
         return account_id, name, confidence, reason
     except Exception:
         logger.exception("LLM classify failed for txn %s", txn.get("id"))
         return None, None, 0.0, None
 
 
-def _should_exclude_transfer(txn: dict[str, Any]) -> bool:
-    if txn.get("posting_intent") == "expense":
-        return False
-    if txn.get("posting_intent") in ("transfer", "personal"):
-        return True
-    return is_transfer(
-        txn.get("category"),
-        txn.get("merchant_name"),
-        txn.get("description"),
-    )
+def _resolve_status(
+    *,
+    qb_account_id: str | None,
+    payment_account_id: str | None,
+    confidence: float,
+    method: str | None,
+    automation: dict[str, Any] | None,
+) -> QbSyncStatus:
+    auto_enabled = automation and automation.get("auto_approve_enabled")
+    threshold = float((automation or {}).get("auto_approve_threshold") or 0.90)
+
+    status: QbSyncStatus = "needs_review"
+    if confidence >= CONFIDENCE_AUTO and payment_account_id and qb_account_id:
+        status = "pending"
+    elif qb_account_id and payment_account_id and confidence >= CONFIDENCE_LLM_MIN:
+        status = "pending"
+
+    if (
+        auto_enabled
+        and qb_account_id
+        and payment_account_id
+        and confidence >= threshold
+        and method in ("fingerprint", "rag", "rule")
+    ):
+        status = "auto_approved"
+    return status
 
 
 def classify_transaction(
     txn: dict[str, Any],
     mappings: list[dict[str, Any]],
     user_rules: dict[str, str],
-    expense_accounts: list[dict[str, Any]],
+    coa: list[dict[str, Any]],
     coa_ids: set[str],
     *,
     fingerprint_row: dict[str, Any] | None = None,
@@ -302,10 +348,11 @@ def classify_transaction(
     category = txn.get("category") or "Uncategorized"
     merchant = txn.get("merchant_name")
     description = txn.get("description")
-    txn_type = txn.get("transaction_type")
+    kind = detect_posting_kind(txn)
+    posting_type = posting_type_for_kind(kind)
 
-    base_excluded = {
-        "qb_posting_type": "skip",
+    base_skip = {
+        "qb_posting_type": posting_type,
         "qb_account_id": None,
         "qb_account_name": None,
         "qb_payment_account_id": None,
@@ -313,40 +360,58 @@ def classify_transaction(
         "qb_confidence_reason": None,
     }
 
-    if _should_exclude_transfer(txn):
+    if kind == "transfer":
         return {
-            **base_excluded,
+            **base_skip,
             "qb_sync_status": "excluded",
+            "qb_posting_type": "transfer",
             "qb_confidence": None,
-            "qb_confidence_reason": "Bank transfer detected — not posted as a business expense",
+            "qb_confidence_reason": "Bank transfer — not posted to P&L (use Teach as expense/income if misclassified)",
         }
 
-    if txn_type == "credit":
+    if kind == "reversal":
         return {
-            **base_excluded,
-            "qb_sync_status": "skipped",
+            **base_skip,
+            "qb_sync_status": "excluded",
+            "qb_posting_type": "skip",
             "qb_confidence": None,
-            "qb_confidence_reason": "Income or deposit — expense posting does not apply",
-            "qb_posting_type": "deposit",
+            "qb_confidence_reason": "Reversal — net against original transaction, not posted separately",
         }
 
     bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
     payment_account_id = bank_map.get("qb_account_id") if bank_map else None
 
+    target_accounts = _accounts_for_kind(coa, kind)
     qb_account_id: str | None = None
     qb_account_name: str | None = None
     confidence = 0.5
     method: str | None = None
     reason: str | None = None
 
+    if kind == "fee":
+        fee_row = _default_fee_account(coa)
+        fee_map = _mapping_lookup(mappings, "category", "Bank Charges")
+        if fee_map:
+            qb_account_id = fee_map.get("qb_account_id")
+            qb_account_name = fee_map.get("qb_account_name")
+            confidence = 0.9
+            method = "rule"
+            reason = "Bank fee — mapped to Bank Charges"
+        elif fee_row:
+            qb_account_id = str(fee_row["qb_account_id"])
+            qb_account_name = fee_row.get("name")
+            confidence = 0.88
+            method = "rule"
+            reason = f"Bank fee — {fee_row.get('name')}"
+
     cat_map = _mapping_lookup(mappings, "category", category)
-    if cat_map:
+    if not qb_account_id and cat_map:
         qb_account_id = cat_map.get("qb_account_id")
         qb_account_name = cat_map.get("qb_account_name")
         confidence = 0.92
         method = "rule"
         reason = f"Category mapping: {category}"
-    else:
+    elif not qb_account_id:
         rule_category: str | None = None
         text = " ".join(filter(None, [merchant, description])).lower()
         for pattern, assigned in user_rules.items():
@@ -367,10 +432,7 @@ def classify_transaction(
         fp_acct = fingerprint_row.get("qb_account_id")
         if fp_conf >= CONFIDENCE_FINGERPRINT_MIN and _account_valid(coa_ids, str(fp_acct or "")):
             qb_account_id = str(fp_acct)
-            qb_account_name = fingerprint_row.get("qb_account_name") or _coa_name(
-                [{"qb_account_id": fp_acct, "name": fingerprint_row.get("qb_account_name")}],
-                str(fp_acct),
-            )
+            qb_account_name = fingerprint_row.get("qb_account_name")
             confidence = fp_conf
             method = "fingerprint"
             reason = fingerprint_confidence_reason(fingerprint_row)
@@ -393,31 +455,25 @@ def classify_transaction(
             method = "llm"
             reason = llm_reason
 
-    auto_enabled = automation and automation.get("auto_approve_enabled")
-    threshold = float((automation or {}).get("auto_approve_threshold") or 0.90)
+    if kind == "income" and not reason:
+        reason = "Income / deposit — map to a QuickBooks income account"
 
-    status: QbSyncStatus = "needs_review"
-    if confidence >= CONFIDENCE_AUTO and payment_account_id and qb_account_id:
-        status = "pending"
-    elif qb_account_id and payment_account_id and confidence >= CONFIDENCE_LLM_MIN:
-        status = "pending"
-    elif qb_account_id and not payment_account_id:
+    if qb_account_id and not payment_account_id:
         confidence = min(confidence, 0.84)
 
-    if (
-        auto_enabled
-        and qb_account_id
-        and payment_account_id
-        and confidence >= threshold
-        and method in ("fingerprint", "rag", "rule")
-    ):
-        status = "auto_approved"
+    status = _resolve_status(
+        qb_account_id=qb_account_id,
+        payment_account_id=payment_account_id,
+        confidence=confidence,
+        method=method,
+        automation=automation,
+    )
 
     fingerprint_id = fingerprint_row.get("id") if fingerprint_row else None
 
     return {
         "qb_sync_status": status,
-        "qb_posting_type": "expense",
+        "qb_posting_type": posting_type,
         "qb_confidence": round(confidence, 2),
         "qb_account_id": qb_account_id,
         "qb_account_name": qb_account_name,
@@ -441,7 +497,6 @@ async def classify_user_transactions(
     mappings = await get_mappings(user_id)
     user_rules = await load_user_category_rules(user_id, sb)
     coa = await list_coa(user_id)
-    expense_accounts = [a for a in coa if a.get("account_type") == "Expense"]
     coa_ids = _coa_ids(coa)
     automation = await get_user_automation(user_id)
 
@@ -451,7 +506,6 @@ async def classify_user_transactions(
             .select("*")
             .eq("user_id", user_id)
             .in_("source_provider", list(BANK_PROVIDERS))
-            .eq("transaction_type", "debit")
             .in_("id", transaction_ids)
             .limit(500)
             .execute()
@@ -465,7 +519,6 @@ async def classify_user_transactions(
             .eq("user_id", user_id)
             .in_("source_provider", list(BANK_PROVIDERS))
             .in_("account_id", list(active_bank_ids))
-            .eq("transaction_type", "debit")
             .is_("qb_sync_status", "null")
             .limit(200)
             .execute()
@@ -485,14 +538,10 @@ async def classify_user_transactions(
         ):
             continue
 
-        if _should_exclude_transfer(txn):
+        kind = detect_posting_kind(txn)
+        if kind in ("transfer", "reversal"):
             update = classify_transaction(
-                txn,
-                mappings,
-                user_rules,
-                expense_accounts,
-                coa_ids,
-                automation=automation,
+                txn, mappings, user_rules, coa, coa_ids, automation=automation
             )
             await run_db(
                 lambda t=txn["id"], u=update: sb.table("transactions")
@@ -512,8 +561,15 @@ async def classify_user_transactions(
         rag_result = None
         llm_result = None
         has_rule = bool(_mapping_lookup(mappings, "category", txn.get("category") or ""))
+        target_accounts = _accounts_for_kind(coa, kind)
+        posting_label = "income" if kind == "income" else "expense"
 
-        if not has_rule and not (fingerprint_row and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN):
+        if kind == "fee" and _default_fee_account(coa):
+            has_rule = True
+
+        if not has_rule and not (
+            fingerprint_row and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN
+        ):
             rag_result = await rag_classify_hint(user_id, txn, coa_ids)
 
         if (
@@ -521,14 +577,17 @@ async def classify_user_transactions(
             and not (fingerprint_row and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN)
             and not (rag_result and rag_result[0])
             and provider != "none"
+            and target_accounts
         ):
-            llm_result = await _llm_classify(txn, expense_accounts, user_id)
+            llm_result = await _llm_classify(
+                txn, target_accounts, user_id, posting_label=posting_label
+            )
 
         update = classify_transaction(
             txn,
             mappings,
             user_rules,
-            expense_accounts,
+            coa,
             coa_ids,
             fingerprint_row=fingerprint_row,
             rag_result=rag_result,
@@ -702,7 +761,7 @@ async def exclude_transaction(user_id: str, transaction_id: str) -> dict[str, An
     sb = get_supabase()
     res = await run_db(
         lambda: sb.table("transactions")
-        .update({"qb_sync_status": "excluded", "qb_posting_type": "skip"})
+        .update({"qb_sync_status": "excluded", "qb_posting_type": "transfer"})
         .eq("id", transaction_id)
         .eq("user_id", user_id)
         .execute()
@@ -715,7 +774,7 @@ async def exclude_transaction(user_id: str, transaction_id: str) -> dict[str, An
 async def set_posting_intent(
     user_id: str,
     transaction_id: str,
-    intent: Literal["expense", "transfer", "personal"],
+    intent: Literal["expense", "income", "transfer", "personal", "fee"],
 ) -> dict[str, Any]:
     sb = get_supabase()
     res = await run_db(
@@ -920,6 +979,27 @@ async def reject_suggestion(user_id: str, transaction_id: str) -> dict[str, Any]
     return {"rejected": True, "transaction_id": transaction_id}
 
 
+def _build_deposit_payload(txn: dict[str, Any]) -> dict[str, Any]:
+    amount = abs(float(txn.get("amount") or 0))
+    txn_date = str(txn.get("transaction_date"))
+    merchant = txn.get("merchant_name") or txn.get("description") or "Deposit"
+    return {
+        "DepositToAccountRef": {"value": str(txn["qb_payment_account_id"])},
+        "TxnDate": txn_date,
+        "PrivateNote": f"FinSight:{txn['id']}",
+        "Line": [
+            {
+                "Amount": amount,
+                "Description": merchant[:4000] if merchant else None,
+                "DetailType": "DepositLineDetail",
+                "DepositLineDetail": {
+                    "AccountRef": {"value": str(txn["qb_account_id"])},
+                },
+            }
+        ],
+    }
+
+
 def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
     txn_date = str(txn.get("transaction_date"))
@@ -960,7 +1040,7 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     if txn.get("qb_sync_status") == "posted" and txn.get("qb_entity_id"):
         return {"skipped": True, "reason": "already_posted", "transaction": txn}
 
-    if txn.get("qb_sync_status") in ("excluded", "skipped") and not is_auto:
+    if txn.get("qb_sync_status") in ("excluded",) and not is_auto:
         return {"skipped": True, "reason": txn.get("qb_sync_status"), "transaction": txn}
 
     if not txn.get("qb_account_id") or not txn.get("qb_payment_account_id"):
@@ -977,17 +1057,26 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     if not txn.get("qb_account_id") or not txn.get("qb_payment_account_id"):
         raise ValueError("Missing QB account mapping. Configure mappings first.")
 
-    payload = _build_purchase_payload(txn)
+    posting_type = txn.get("qb_posting_type") or "expense"
+    if posting_type == "deposit":
+        payload = _build_deposit_payload(txn)
+        api_path = "/deposit?minorversion=75"
+        entity_type = "Deposit"
+    else:
+        payload = _build_purchase_payload(txn)
+        api_path = "/purchase?minorversion=75"
+        entity_type = "Purchase"
+
     last_error: str | None = None
     for attempt in range(2):
         try:
-            data = await qb_company_post_json(user_id, "/purchase?minorversion=75", payload)
-            purchase = data.get("Purchase") or {}
-            entity_id = str(purchase.get("Id", ""))
+            data = await qb_company_post_json(user_id, api_path, payload)
+            entity = data.get(entity_type) or {}
+            entity_id = str(entity.get("Id", ""))
             now = datetime.now(timezone.utc).isoformat()
             update = {
                 "qb_sync_status": "posted",
-                "qb_entity_type": "Purchase",
+                "qb_entity_type": entity_type,
                 "qb_entity_id": entity_id,
                 "qb_posted_at": now,
                 "qb_error": None,

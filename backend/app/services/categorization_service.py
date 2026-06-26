@@ -68,7 +68,7 @@ NARRATION_RULES: list[tuple[tuple[str, ...], str]] = [
     (("school", "tuition", "university"), "Education"),
     (("hospital", "pharmacy", "clinic"), "Health"),
     (("bet9ja", "sportybet", "betting"), "Betting"),
-    (("charge", "fee", "commission", "vat"), "Bank Charges"),
+    (("charge", "fee", "commission", "vat", "stamp duty", "stamp ", "sms charge", "cot "), "Bank Charges"),
     (("atm", "cash withdrawal"), "Cash Withdrawal"),
 ]
 

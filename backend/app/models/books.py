@@ -115,7 +115,7 @@ class BulkApproveRequest(BaseModel):
 
 class IntentRequest(BaseModel):
     transaction_id: str
-    intent: Literal["expense", "transfer", "personal"]
+    intent: Literal["expense", "income", "transfer", "personal", "fee"]
 
 
 class RejectRequest(BaseModel):

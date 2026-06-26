@@ -39,9 +39,29 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "needs_review", label: "Needs review" },
   { id: "auto_approved", label: "Auto-approved" },
   { id: "posted", label: "Posted" },
-  { id: "excluded", label: "Excluded" },
+  { id: "excluded", label: "Transfers" },
   { id: "failed", label: "Failed" },
 ];
+
+function postingTypeLabel(type: string | null | undefined, txnType?: string) {
+  if (type === "deposit") return "Income";
+  if (type === "fee") return "Fee";
+  if (type === "transfer") return "Transfer";
+  if (type === "expense") return "Expense";
+  if (txnType === "credit") return "Income";
+  return "—";
+}
+
+function coaForRow(
+  row: QueueItem,
+  expenseCoa: CoaAccount[],
+  incomeCoa: CoaAccount[]
+): CoaAccount[] {
+  if (row.qb_posting_type === "deposit" || row.transaction_type === "credit") {
+    return incomeCoa;
+  }
+  return expenseCoa;
+}
 
 const selectClass =
   "h-9 min-w-[160px] rounded-md border border-slate-700 bg-slate-900 px-2 text-sm text-white";
@@ -95,6 +115,7 @@ function BooksQueueContent() {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [groups, setGroups] = useState<QueueGroup[]>([]);
   const [expenseCoa, setExpenseCoa] = useState<CoaAccount[]>([]);
+  const [incomeCoa, setIncomeCoa] = useState<CoaAccount[]>([]);
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
@@ -155,13 +176,15 @@ function BooksQueueContent() {
           return;
         }
 
-        const [coa, expense, auto] = await Promise.all([
+        const [coa, expense, income, auto] = await Promise.all([
           listCoa(),
           listCoa("Expense"),
+          listCoa("Income"),
           getAutomationSettings(),
         ]);
         if (coa.total === 0) await syncCoa();
         setExpenseCoa(expense.items);
+        setIncomeCoa(income.items);
         if (!sum.automation) setAutomation(auto);
 
         await refreshQueue(status, page, view);
@@ -193,7 +216,7 @@ function BooksQueueContent() {
   async function handleApprove(row: QueueItem, post = true) {
     const accountId = accountEdits[row.id] || row.qb_account_id;
     if (!accountId) {
-      setError("Select a QuickBooks expense account first");
+      setError("Select a QuickBooks account first");
       return;
     }
     setActionLoading(row.id);
@@ -270,12 +293,12 @@ function BooksQueueContent() {
     }
   }
 
-  async function handleTeachExpense(id: string) {
+  async function handleTeachIntent(id: string, intent: "expense" | "income") {
     setActionLoading(id);
     try {
-      await setPostingIntent(id, "expense");
-      setInfo("Marked as expense — re-classifying");
-      await load();
+      await setPostingIntent(id, intent);
+      setInfo(`Marked as ${intent} — re-classifying`);
+      await load({ classify: true });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Intent update failed");
     } finally {
@@ -313,7 +336,7 @@ function BooksQueueContent() {
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
           <p className="text-sm text-slate-400">
-            Connect QuickBooks to approve bank transactions and post expenses with AI-assisted learning.
+            Connect QuickBooks to approve bank transactions and post expenses, income, and fees with AI-assisted learning.
           </p>
           <QuickBooksConnectButton />
         </div>
@@ -358,7 +381,8 @@ function BooksQueueContent() {
       <div>
         <h1 className="text-2xl font-bold text-white">Books Queue</h1>
         <p className="text-slate-400">
-          Approve transactions to train FinSight. High-confidence patterns can auto-post overnight.
+          Review all bank debits and credits. Train FinSight to map each line to QuickBooks — expenses,
+          income, fees, or transfers.
         </p>
       </div>
 
@@ -428,6 +452,18 @@ function BooksQueueContent() {
         </Button>
       </div>
 
+      {classifying && (
+        <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-4 py-2 text-sm text-blue-200">
+          Classifying transactions (rules → fingerprints → similar approvals → AI)…
+        </div>
+      )}
+
+      <p className="text-xs text-slate-500">
+        Classification order: mapping rules → learned fingerprints → similar past approvals (RAG) → AI.
+        Use Refresh to re-run on unmapped lines. Transfers holds NIP-style movements — teach as expense or
+        income if misclassified.
+      </p>
+
       {view === "grouped" && groups.length > 0 && (
         <div className="space-y-3">
           {groups.map((g) => (
@@ -474,6 +510,7 @@ function BooksQueueContent() {
               )}
               <th className="p-3">Date</th>
               <th className="p-3">Merchant</th>
+              <th className="p-3">Type</th>
               <th className="p-3">QB Account</th>
               <th className="p-3">Confidence</th>
               <th className="p-3">Method</th>
@@ -484,7 +521,7 @@ function BooksQueueContent() {
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={9} className="p-8 text-center text-slate-500">
+                <td colSpan={10} className="p-8 text-center text-slate-500">
                   No transactions in this queue.{" "}
                   <Link href="/books/mappings" className="text-blue-400 hover:underline">
                     Configure mappings
@@ -512,7 +549,23 @@ function BooksQueueContent() {
                     )}
                   </td>
                   <td className="p-3">
-                    {(status === "pending" || status === "needs_review") && expenseCoa.length > 0 ? (
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs ${
+                        row.qb_posting_type === "deposit" || row.transaction_type === "credit"
+                          ? "bg-emerald-900/40 text-emerald-300"
+                          : row.qb_posting_type === "fee"
+                            ? "bg-amber-900/40 text-amber-300"
+                            : row.qb_posting_type === "transfer" || row.qb_sync_status === "excluded"
+                              ? "bg-slate-800 text-slate-400"
+                              : "bg-blue-900/40 text-blue-300"
+                      }`}
+                    >
+                      {postingTypeLabel(row.qb_posting_type, row.transaction_type)}
+                    </span>
+                  </td>
+                  <td className="p-3">
+                    {(status === "pending" || status === "needs_review") &&
+                    coaForRow(row, expenseCoa, incomeCoa).length > 0 ? (
                       <select
                         className={selectClass}
                         value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
@@ -521,7 +574,7 @@ function BooksQueueContent() {
                         }
                       >
                         <option value="">Select account…</option>
-                        {expenseCoa.map((a) => (
+                        {coaForRow(row, expenseCoa, incomeCoa).map((a) => (
                           <option key={a.qb_account_id} value={a.qb_account_id}>
                             {a.name}
                           </option>
@@ -569,13 +622,24 @@ function BooksQueueContent() {
                         </Button>
                       )}
                       {status === "excluded" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleTeachExpense(row.id)}
-                        >
-                          Teach as expense
-                        </Button>
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleTeachIntent(row.id, "expense")}
+                          >
+                            Teach as expense
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleTeachIntent(row.id, "income")}
+                          >
+                            Teach as income
+                          </Button>
+                        </>
                       )}
                       {status !== "posted" && status !== "excluded" && (
                         <Button size="sm" variant="ghost" onClick={() => handleExclude(row.id)}>
