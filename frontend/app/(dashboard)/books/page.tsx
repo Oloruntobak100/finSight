@@ -43,11 +43,17 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "failed", label: "Failed" },
 ];
 
-function postingTypeLabel(type: string | null | undefined, txnType?: string) {
+function postingTypeLabel(
+  type: string | null | undefined,
+  txnType?: string,
+  reason?: string | null
+) {
+  if (type === "refund") return "Refund";
   if (type === "deposit") return "Income";
   if (type === "fee") return "Fee";
   if (type === "transfer") return "Transfer";
   if (type === "expense") return "Expense";
+  if (type === "skip" && reason?.toLowerCase().includes("balance sheet")) return "Balance sheet";
   if (txnType === "credit") return "Income";
   return "—";
 }
@@ -57,7 +63,17 @@ function coaForRow(
   expenseCoa: CoaAccount[],
   incomeCoa: CoaAccount[]
 ): CoaAccount[] {
-  if (row.qb_posting_type === "deposit" || row.transaction_type === "credit") {
+  if (row.qb_posting_type === "deposit") {
+    return incomeCoa;
+  }
+  if (
+    row.qb_posting_type === "refund" ||
+    row.qb_posting_type === "expense" ||
+    row.qb_posting_type === "fee"
+  ) {
+    return expenseCoa;
+  }
+  if (row.transaction_type === "credit") {
     return incomeCoa;
   }
   return expenseCoa;
@@ -551,16 +567,26 @@ function BooksQueueContent() {
                   <td className="p-3">
                     <span
                       className={`rounded px-2 py-0.5 text-xs ${
-                        row.qb_posting_type === "deposit" || row.transaction_type === "credit"
+                        row.qb_posting_type === "deposit" ||
+                        (row.transaction_type === "credit" &&
+                          row.qb_posting_type !== "refund" &&
+                          row.qb_sync_status !== "excluded")
                           ? "bg-emerald-900/40 text-emerald-300"
-                          : row.qb_posting_type === "fee"
-                            ? "bg-amber-900/40 text-amber-300"
-                            : row.qb_posting_type === "transfer" || row.qb_sync_status === "excluded"
-                              ? "bg-slate-800 text-slate-400"
-                              : "bg-blue-900/40 text-blue-300"
+                          : row.qb_posting_type === "refund"
+                            ? "bg-violet-900/40 text-violet-300"
+                            : row.qb_posting_type === "fee"
+                              ? "bg-amber-900/40 text-amber-300"
+                              : row.qb_posting_type === "transfer" ||
+                                  row.qb_sync_status === "excluded"
+                                ? "bg-slate-800 text-slate-400"
+                                : "bg-blue-900/40 text-blue-300"
                       }`}
                     >
-                      {postingTypeLabel(row.qb_posting_type, row.transaction_type)}
+                      {postingTypeLabel(
+                        row.qb_posting_type,
+                        row.transaction_type,
+                        row.qb_confidence_reason
+                      )}
                     </span>
                   </td>
                   <td className="p-3">

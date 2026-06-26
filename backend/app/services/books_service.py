@@ -36,6 +36,7 @@ from app.services.transaction_posting_utils import (
     default_fee_account_names,
     detect_posting_kind,
     is_bank_fee,
+    posting_kind_to_intent,
     posting_type_for_kind,
 )
 from app.services.transfer_utils import is_transfer
@@ -160,6 +161,8 @@ def _mapping_lookup(mappings: list[dict[str, Any]], mapping_type: str, key: str)
 def _accounts_for_kind(coa: list[dict[str, Any]], kind: PostingKind) -> list[dict[str, Any]]:
     if kind == "income":
         return [a for a in coa if a.get("account_type") == "Income"]
+    if kind in ("expense", "fee", "refund"):
+        return [a for a in coa if a.get("account_type") == "Expense"]
     return [a for a in coa if a.get("account_type") == "Expense"]
 
 
@@ -340,6 +343,7 @@ def classify_transaction(
     coa_ids: set[str],
     *,
     fingerprint_row: dict[str, Any] | None = None,
+    learned_kind: PostingKind | None = None,
     rag_result: tuple[str | None, str | None, float, str | None] | None = None,
     llm_result: tuple[str | None, str | None, float, str | None] | None = None,
     automation: dict[str, Any] | None = None,
@@ -348,7 +352,7 @@ def classify_transaction(
     category = txn.get("category") or "Uncategorized"
     merchant = txn.get("merchant_name")
     description = txn.get("description")
-    kind = detect_posting_kind(txn)
+    kind = detect_posting_kind(txn, learned_kind=learned_kind)
     posting_type = posting_type_for_kind(kind)
 
     base_skip = {
@@ -376,6 +380,18 @@ def classify_transaction(
             "qb_posting_type": "skip",
             "qb_confidence": None,
             "qb_confidence_reason": "Reversal — net against original transaction, not posted separately",
+        }
+
+    if kind == "balance_sheet":
+        return {
+            **base_skip,
+            "qb_sync_status": "excluded",
+            "qb_posting_type": "skip",
+            "qb_confidence": None,
+            "qb_confidence_reason": (
+                "Balance sheet movement (loan, savings, investment, equity) — not P&L "
+                "(use Teach as expense/income if misclassified)"
+            ),
         }
 
     bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
@@ -457,6 +473,8 @@ def classify_transaction(
 
     if kind == "income" and not reason:
         reason = "Income / deposit — map to a QuickBooks income account"
+    elif kind == "refund" and not reason:
+        reason = "Vendor refund — map to the original expense category"
 
     if qb_account_id and not payment_account_id:
         confidence = min(confidence, 0.84)
@@ -538,10 +556,26 @@ async def classify_user_transactions(
         ):
             continue
 
-        kind = detect_posting_kind(txn)
-        if kind in ("transfer", "reversal"):
+        fp = extract_fingerprint(txn)
+        fingerprint_row = await lookup_fingerprint(user_id, fp)
+        learned_kind: PostingKind | None = None
+        if fingerprint_row:
+            await touch_fingerprint_seen(user_id, txn)
+            fp_conf = float(fingerprint_row.get("confidence") or 0)
+            stored_kind = fingerprint_row.get("posting_kind")
+            if fp_conf >= CONFIDENCE_FINGERPRINT_MIN and stored_kind:
+                learned_kind = stored_kind  # type: ignore[assignment]
+
+        kind = detect_posting_kind(txn, learned_kind=learned_kind)
+        if kind in ("transfer", "reversal", "balance_sheet"):
             update = classify_transaction(
-                txn, mappings, user_rules, coa, coa_ids, automation=automation
+                txn,
+                mappings,
+                user_rules,
+                coa,
+                coa_ids,
+                learned_kind=learned_kind,
+                automation=automation,
             )
             await run_db(
                 lambda t=txn["id"], u=update: sb.table("transactions")
@@ -552,11 +586,6 @@ async def classify_user_transactions(
             )
             classified += 1
             continue
-
-        fp = extract_fingerprint(txn)
-        fingerprint_row = await lookup_fingerprint(user_id, fp)
-        if fingerprint_row:
-            await touch_fingerprint_seen(user_id, txn)
 
         rag_result = None
         llm_result = None
@@ -590,6 +619,7 @@ async def classify_user_transactions(
             coa,
             coa_ids,
             fingerprint_row=fingerprint_row,
+            learned_kind=learned_kind,
             rag_result=rag_result,
             llm_result=llm_result,
             automation=automation,
@@ -834,7 +864,13 @@ async def approve_transaction(
         bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
         payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
 
-    fp_row = await upsert_fingerprint_from_decision(user_id, txn, final_account_id, final_name)
+    fp_row = await upsert_fingerprint_from_decision(
+        user_id,
+        txn,
+        final_account_id,
+        final_name,
+        posting_kind=detect_posting_kind(txn),
+    )
 
     decision = await log_posting_decision(
         user_id,
@@ -871,11 +907,13 @@ async def approve_transaction(
             final_name,
         )
 
+    approved_kind = detect_posting_kind(txn)
     update = {
         "qb_account_id": final_account_id,
         "qb_account_name": final_name,
         "qb_payment_account_id": payment_account_id,
         "fingerprint_id": fp_row.get("id"),
+        "posting_intent": posting_kind_to_intent(approved_kind),
         "qb_sync_status": "pending",
     }
     await run_db(
@@ -1058,7 +1096,7 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
         raise ValueError("Missing QB account mapping. Configure mappings first.")
 
     posting_type = txn.get("qb_posting_type") or "expense"
-    if posting_type == "deposit":
+    if posting_type in ("deposit", "refund"):
         payload = _build_deposit_payload(txn)
         api_path = "/deposit?minorversion=75"
         entity_type = "Deposit"

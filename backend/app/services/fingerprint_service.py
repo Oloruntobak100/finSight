@@ -165,6 +165,8 @@ async def upsert_fingerprint_from_decision(
     txn: dict[str, Any],
     final_account_id: str,
     final_account_name: str | None,
+    *,
+    posting_kind: str | None = None,
 ) -> dict[str, Any]:
     fp = extract_fingerprint(txn)
     sb = get_supabase()
@@ -185,6 +187,7 @@ async def upsert_fingerprint_from_decision(
                     "qb_account_name": final_account_name,
                     "bank_code": fp.get("bank_code"),
                     "updated_at": now,
+                    **({"posting_kind": posting_kind} if posting_kind else {}),
                 }
             )
             .eq("id", fingerprint_id)
@@ -202,6 +205,7 @@ async def upsert_fingerprint_from_decision(
             "qb_account_id": final_account_id,
             "qb_account_name": final_account_name,
             "confidence": 0.0,
+            "posting_kind": posting_kind,
         }
         res = await run_db(
             lambda: sb.table("transaction_fingerprints").insert(row).execute()

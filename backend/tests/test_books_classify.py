@@ -272,3 +272,46 @@ def test_auto_approve_when_opted_in():
     )
     assert result["qb_sync_status"] == "auto_approved"
     assert result["qb_suggestion_method"] == "fingerprint"
+
+
+def test_balance_sheet_excluded():
+    txn = {
+        "account_id": "bank-1",
+        "category": "Loan Repayment",
+        "transaction_type": "debit",
+        "amount": 50000,
+    }
+    result = classify_transaction(txn, [], {}, _coa(), _coa_ids())
+    assert result["qb_sync_status"] == "excluded"
+    assert "Balance sheet" in (result["qb_confidence_reason"] or "")
+
+
+def test_refund_uses_expense_coa_path():
+    txn = {
+        "account_id": "bank-1",
+        "category": "Shopping",
+        "merchant_name": "Vendor",
+        "description": "Refund for returned item",
+        "transaction_type": "credit",
+        "amount": 10000,
+    }
+    mappings = [
+        {
+            "mapping_type": "bank_account",
+            "finsight_key": "bank-1",
+            "qb_account_id": "35",
+            "qb_account_name": "Checking",
+        },
+        {
+            "mapping_type": "category",
+            "finsight_key": "Shopping",
+            "qb_account_id": "42",
+            "qb_account_name": "Supplies",
+        },
+    ]
+    coa = _coa(("35", "Checking", "Bank"), ("42", "Supplies", "Expense"))
+    result = classify_transaction(txn, mappings, {}, coa, _coa_ids("35", "42"))
+    assert result["qb_posting_type"] == "refund"
+    assert result["qb_account_id"] == "42"
+    assert result["qb_suggestion_method"] == "rule"
+
