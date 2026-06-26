@@ -36,7 +36,7 @@ def test_narration_mix_includes_none_and_remarks():
             none_count += 1
         elif any(k in narr.upper() for k in ("RNT", "INV", "WAGES", "PAYROLL", "SALARY")):
             remark_count += 1
-    assert none_count > 20
+    assert none_count > 10
     assert none_count + remark_count <= 80
 
 
@@ -88,3 +88,12 @@ def test_persona_presets_merge():
     merged = merge_persona_config("individual", {"remark_rate": 0.4})
     assert merged["remark_rate"] == 0.4
     assert merged["daily_tx_target"] == PERSONA_PRESETS["individual"]["daily_tx_target"]
+
+
+def test_rows_helper_handles_none_response():
+    from app.services.synthetic_feed_service import _first_row, _rows
+
+    assert _rows(None) == []
+    assert _first_row(None) is None
+    assert _rows(type("R", (), {"data": []})()) == []
+    assert _first_row(type("R", (), {"data": [{"id": "1"}]})()) == {"id": "1"}

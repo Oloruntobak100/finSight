@@ -22,67 +22,107 @@ from app.services.transaction_enrichment import build_mono_transaction_row, load
 logger = logging.getLogger(__name__)
 
 
+def _rows(res: Any) -> list[dict[str, Any]]:
+    """Safe extract rows from Supabase execute() — handles None and maybe_single quirks."""
+    if res is None:
+        return []
+    data = getattr(res, "data", None)
+    if not data:
+        return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def _first_row(res: Any) -> dict[str, Any] | None:
+    rows = _rows(res)
+    return rows[0] if rows else None
+
+
+async def _select_one(
+    sb: Any,
+    table: str,
+    *,
+    filters: list[tuple[str, str, Any]],
+) -> dict[str, Any] | None:
+    def _query() -> Any:
+        q = sb.table(table).select("*")
+        for op, col, val in filters:
+            if op == "eq":
+                q = q.eq(col, val)
+        return q.limit(1).execute()
+
+    return _first_row(await run_db(_query))
+
+
 def synthetic_feed_allowed() -> bool:
     return settings.synthetic_feed_allowed
 
 
 async def _get_mono_account(user_id: str, account_id: str) -> dict[str, Any]:
     sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("*")
-        .eq("id", account_id)
-        .eq("user_id", user_id)
-        .eq("provider", "mono")
-        .eq("status", "active")
-        .maybe_single()
-        .execute()
+    row = await _select_one(
+        sb,
+        "connected_accounts",
+        filters=[
+            ("eq", "id", account_id),
+            ("eq", "user_id", user_id),
+            ("eq", "provider", "mono"),
+            ("eq", "status", "active"),
+        ],
     )
-    if not res.data:
+    if not row:
         raise ValueError("Mono bank account not found or inactive")
-    return res.data
+    return row
 
 
 async def _upsert_profile_row(user_id: str, account_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     sb = get_supabase()
-    existing = await run_db(
-        lambda: sb.table("synthetic_feed_profiles")
-        .select("*")
-        .eq("user_id", user_id)
-        .eq("account_id", account_id)
-        .maybe_single()
-        .execute()
+    existing_row = await _select_one(
+        sb,
+        "synthetic_feed_profiles",
+        filters=[
+            ("eq", "user_id", user_id),
+            ("eq", "account_id", account_id),
+        ],
     )
     patch["updated_at"] = datetime.now(timezone.utc).isoformat()
-    if existing.data:
+    if existing_row:
         res = await run_db(
             lambda: sb.table("synthetic_feed_profiles")
             .update(patch)
-            .eq("id", existing.data["id"])
+            .eq("id", existing_row["id"])
+            .select("*")
             .execute()
         )
-        return res.data[0]
+        updated = _first_row(res)
+        if not updated:
+            raise ValueError("Could not update synthetic feed profile")
+        return updated
     patch.update({"user_id": user_id, "account_id": account_id})
     res = await run_db(
         lambda: sb.table("synthetic_feed_profiles").insert(patch).select("*").execute()
     )
-    if not res.data:
+    created = _first_row(res)
+    if not created:
         raise ValueError("Could not create synthetic feed profile")
-    return res.data[0]
+    return created
 
 
 async def get_or_create_profile(user_id: str, account_id: str) -> dict[str, Any]:
     sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("synthetic_feed_profiles")
-        .select("*")
-        .eq("user_id", user_id)
-        .eq("account_id", account_id)
-        .maybe_single()
-        .execute()
+    row = await _select_one(
+        sb,
+        "synthetic_feed_profiles",
+        filters=[
+            ("eq", "user_id", user_id),
+            ("eq", "account_id", account_id),
+        ],
     )
-    if res.data:
-        return res.data
+    if row:
+        return row
     return await _upsert_profile_row(
         user_id,
         account_id,
@@ -143,8 +183,13 @@ async def _start_run(
         "persona_snapshot": persona_snapshot or {},
         "status": "running",
     }
-    res = await run_db(lambda: sb.table("synthetic_feed_runs").insert(row).execute())
-    return res.data[0]
+    res = await run_db(
+        lambda: sb.table("synthetic_feed_runs").insert(row).select("*").execute()
+    )
+    created = _first_row(res)
+    if not created:
+        raise ValueError("Could not start synthetic feed run")
+    return created
 
 
 async def _finish_run(
@@ -206,8 +251,9 @@ async def _insert_synthetic_transactions(
             .upsert(r, on_conflict="source_provider,external_id,user_id")
             .execute()
         )
-        if res.data:
-            created_ids.append(res.data[0]["id"])
+        inserted = _first_row(res)
+        if inserted and inserted.get("id"):
+            created_ids.append(inserted["id"])
 
     return created_ids
 
