@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchFeedStatus, PERSONA_LABELS, type SyntheticFeedAccount } from "@/lib/data-feed";
+import { fetchFeedStatus, formatDailyTxRange, PERSONA_LABELS, type SyntheticFeedAccount } from "@/lib/data-feed";
 import { apiFetch } from "@/lib/api";
 
 export default function DataFeedPage() {
@@ -108,7 +108,7 @@ export default function DataFeedPage() {
                   <p className="font-medium text-white">{acct.account_name}</p>
                   <p className="text-sm text-slate-400">
                     {acct.profile
-                      ? `${PERSONA_LABELS[acct.profile.persona_type as keyof typeof PERSONA_LABELS] || acct.profile.persona_type} · ${acct.profile.daily_tx_target}/day`
+                      ? `${PERSONA_LABELS[acct.profile.persona_type as keyof typeof PERSONA_LABELS] || acct.profile.persona_type} · ${formatDailyTxRange(acct.profile)}`
                       : "No persona configured"}
                     {acct.live_feed_enabled && (
                       <span className="ml-2 text-green-400">· Live feed on</span>

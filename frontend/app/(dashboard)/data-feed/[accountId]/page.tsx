@@ -41,7 +41,8 @@ export default function DataFeedAccountPage() {
   const [presets, setPresets] = useState<Record<string, Record<string, unknown>>>({});
 
   const [personaType, setPersonaType] = useState<PersonaType>("individual");
-  const [dailyTxTarget, setDailyTxTarget] = useState(15);
+  const [dailyTxMin, setDailyTxMin] = useState(8);
+  const [dailyTxMax, setDailyTxMax] = useState(20);
   const [remarkRate, setRemarkRate] = useState(0.25);
   const [liveIntervalHours, setLiveIntervalHours] = useState(6);
   const [autoClassify, setAutoClassify] = useState(true);
@@ -65,7 +66,8 @@ export default function DataFeedAccountPage() {
       setPresets(data.presets);
       const p = data.profile;
       setPersonaType(p.persona_type as PersonaType);
-      setDailyTxTarget(p.daily_tx_target);
+      setDailyTxMin(p.daily_tx_min ?? Math.max(1, p.daily_tx_target - 7));
+      setDailyTxMax(p.daily_tx_max ?? Math.min(500, p.daily_tx_target + 7));
       setLiveIntervalHours(p.live_interval_hours);
       setAutoClassify(p.auto_classify);
       const cfg = p.persona_config as { remark_rate?: number };
@@ -95,8 +97,9 @@ export default function DataFeedAccountPage() {
   function applyPreset(type: PersonaType) {
     setPersonaType(type);
     const preset = presets[type];
-    if (preset && typeof preset.daily_tx_target === "number") {
-      setDailyTxTarget(preset.daily_tx_target);
+    if (preset && typeof preset.daily_tx_min === "number" && typeof preset.daily_tx_max === "number") {
+      setDailyTxMin(preset.daily_tx_min);
+      setDailyTxMax(preset.daily_tx_max);
     }
     if (preset && typeof preset.remark_rate === "number") {
       setRemarkRate(preset.remark_rate);
@@ -110,7 +113,8 @@ export default function DataFeedAccountPage() {
       const res = await saveProfile(accountId, {
         persona_type: personaType,
         persona_config: { remark_rate: remarkRate },
-        daily_tx_target: dailyTxTarget,
+        daily_tx_min: dailyTxMin,
+        daily_tx_max: dailyTxMax,
         live_interval_hours: liveIntervalHours,
         auto_classify: autoClassify,
         historical_start: histStart || undefined,
@@ -335,13 +339,23 @@ export default function DataFeedAccountPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-xs text-slate-400">Daily transaction target</label>
+              <label className="mb-1.5 block text-xs text-slate-400">Daily transactions (min)</label>
               <Input
                 type="number"
                 min={1}
                 max={500}
-                value={dailyTxTarget}
-                onChange={(e) => setDailyTxTarget(parseInt(e.target.value, 10) || 15)}
+                value={dailyTxMin}
+                onChange={(e) => setDailyTxMin(parseInt(e.target.value, 10) || 1)}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs text-slate-400">Daily transactions (max)</label>
+              <Input
+                type="number"
+                min={1}
+                max={500}
+                value={dailyTxMax}
+                onChange={(e) => setDailyTxMax(parseInt(e.target.value, 10) || 1)}
               />
             </div>
             <div>
@@ -430,8 +444,8 @@ export default function DataFeedAccountPage() {
         </CardHeader>
         <div className="flex flex-wrap gap-2 px-6 pb-2">
           <p className="w-full text-xs text-slate-500">
-            ~{Math.max(1, Math.round(dailyTxTarget / Math.max(1, 24 / liveIntervalHours)))} transactions every{" "}
-            {liveIntervalHours}h ({dailyTxTarget}/day target)
+            ~{Math.max(1, Math.round((dailyTxMin + dailyTxMax) / 2 / Math.max(1, 24 / liveIntervalHours)))}{" "}
+            transactions every {liveIntervalHours}h ({dailyTxMin}–{dailyTxMax}/day range)
           </p>
         </div>
         <div className="flex flex-wrap gap-2 px-6 pb-6">

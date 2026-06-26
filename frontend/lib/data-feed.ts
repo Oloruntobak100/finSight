@@ -11,6 +11,8 @@ export interface SyntheticFeedProfile {
   historical_end?: string | null;
   live_feed_enabled: boolean;
   live_interval_hours: number;
+  daily_tx_min: number;
+  daily_tx_max: number;
   daily_tx_target: number;
   auto_classify: boolean;
   status: string;
@@ -116,3 +118,9 @@ export const PERSONA_LABELS: Record<PersonaType, string> = {
   small_business: "Small business",
   retail: "Retail shop",
 };
+
+export function formatDailyTxRange(profile: Pick<SyntheticFeedProfile, "daily_tx_min" | "daily_tx_max" | "daily_tx_target">) {
+  const lo = profile.daily_tx_min ?? Math.max(1, profile.daily_tx_target - 7);
+  const hi = profile.daily_tx_max ?? Math.min(500, profile.daily_tx_target + 7);
+  return `${lo}–${hi}/day`;
+}

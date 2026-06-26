@@ -19,7 +19,9 @@ class PersonaConfig(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     persona_type: PersonaType = "individual"
     persona_config: Optional[dict[str, Any]] = None
-    daily_tx_target: Optional[int] = Field(None, ge=1, le=500)
+    daily_tx_min: Optional[int] = Field(None, ge=1, le=500)
+    daily_tx_max: Optional[int] = Field(None, ge=1, le=500)
+    daily_tx_target: Optional[int] = Field(None, ge=1, le=500)  # legacy midpoint
     live_interval_hours: Optional[int] = Field(None, ge=1, le=24)
     auto_classify: Optional[bool] = True
     historical_start: Optional[str] = None

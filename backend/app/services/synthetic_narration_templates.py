@@ -279,7 +279,8 @@ def _txn_type_for_kind(kind: TxnKind) -> str:
 
 PERSONA_PRESETS: dict[str, dict[str, Any]] = {
     "individual": {
-        "daily_tx_target": 15,
+        "daily_tx_min": 8,
+        "daily_tx_max": 20,
         "remark_rate": 0.25,
         "currency": "NGN",
         "people": DEFAULT_PEOPLE,
@@ -289,7 +290,8 @@ PERSONA_PRESETS: dict[str, dict[str, Any]] = {
         "suppliers": DEFAULT_SUPPLIERS,
     },
     "freelancer": {
-        "daily_tx_target": 22,
+        "daily_tx_min": 15,
+        "daily_tx_max": 30,
         "remark_rate": 0.30,
         "currency": "NGN",
         "people": DEFAULT_PEOPLE + ["CLIENT CO LTD", "DESIGN STUDIO NG"],
@@ -299,7 +301,8 @@ PERSONA_PRESETS: dict[str, dict[str, Any]] = {
         "suppliers": DEFAULT_SUPPLIERS,
     },
     "small_business": {
-        "daily_tx_target": 65,
+        "daily_tx_min": 40,
+        "daily_tx_max": 80,
         "remark_rate": 0.35,
         "currency": "NGN",
         "people": DEFAULT_PEOPLE,
@@ -309,7 +312,8 @@ PERSONA_PRESETS: dict[str, dict[str, Any]] = {
         "suppliers": DEFAULT_SUPPLIERS + ["OFFICE SUPPLIES NG", "PAYROLL SERVICES"],
     },
     "retail": {
-        "daily_tx_target": 100,
+        "daily_tx_min": 70,
+        "daily_tx_max": 120,
         "remark_rate": 0.20,
         "currency": "NGN",
         "people": DEFAULT_PEOPLE,
@@ -328,9 +332,52 @@ def merge_persona_config(persona_type: str, overrides: dict[str, Any] | None) ->
     return base
 
 
-def drip_batch_size(daily_tx_target: int, live_interval_hours: int) -> int:
+def resolve_daily_tx_range(profile_or_config: dict[str, Any]) -> tuple[int, int]:
+    """Return (min, max) daily transaction target from profile row or persona config."""
+    cfg = profile_or_config.get("persona_config") or {}
+    if isinstance(cfg, dict):
+        lo = cfg.get("daily_tx_min")
+        hi = cfg.get("daily_tx_max")
+        if lo is not None and hi is not None:
+            return _normalize_tx_range(int(lo), int(hi))
+
+    lo = profile_or_config.get("daily_tx_min")
+    hi = profile_or_config.get("daily_tx_max")
+    if lo is not None and hi is not None:
+        return _normalize_tx_range(int(lo), int(hi))
+
+    legacy = profile_or_config.get("daily_tx_target")
+    if legacy is not None:
+        target = int(legacy)
+        return _normalize_tx_range(max(1, target - 7), min(500, target + 7))
+
+    preset = PERSONA_PRESETS.get(profile_or_config.get("persona_type", "individual"), PERSONA_PRESETS["individual"])
+    return _normalize_tx_range(int(preset["daily_tx_min"]), int(preset["daily_tx_max"]))
+
+
+def _normalize_tx_range(lo: int, hi: int) -> tuple[int, int]:
+    lo = max(1, min(lo, 500))
+    hi = max(1, min(hi, 500))
+    if lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+def sample_daily_tx_target(profile_or_config: dict[str, Any]) -> int:
+    lo, hi = resolve_daily_tx_range(profile_or_config)
+    return random.randint(lo, hi)
+
+
+def drip_batch_size(daily_tx_min: int, daily_tx_max: int, live_interval_hours: int) -> int:
     ticks_per_day = max(1, 24 // max(1, live_interval_hours))
-    return max(1, round(daily_tx_target / ticks_per_day))
+    target = sample_daily_tx_target({"daily_tx_min": daily_tx_min, "daily_tx_max": daily_tx_max})
+    return max(1, round(target / ticks_per_day))
+
+
+def drip_batch_size_for_profile(profile: dict[str, Any]) -> int:
+    lo, hi = resolve_daily_tx_range(profile)
+    interval = int(profile.get("live_interval_hours") or 6)
+    return drip_batch_size(lo, hi, interval)
 
 
 def spread_dates(count: int, start: datetime, end: datetime) -> list[datetime]:

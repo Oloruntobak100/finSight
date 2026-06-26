@@ -11,11 +11,13 @@ from app.database import get_supabase, run_db
 from app.services.books_service import classify_user_transactions
 from app.services.synthetic_narration_templates import (
     PERSONA_PRESETS,
-    drip_batch_size,
+    drip_batch_size_for_profile,
+    merge_persona_config,
+    resolve_daily_tx_range,
+    sample_daily_tx_target,
+    spread_dates,
     generate_charge_sibling,
     generate_mono_payload,
-    merge_persona_config,
-    spread_dates,
 )
 from app.services.transaction_enrichment import build_mono_transaction_row, load_user_category_rules
 
@@ -129,7 +131,9 @@ async def get_or_create_profile(user_id: str, account_id: str) -> dict[str, Any]
         {
             "persona_type": "individual",
             "persona_config": PERSONA_PRESETS["individual"],
-            "daily_tx_target": PERSONA_PRESETS["individual"]["daily_tx_target"],
+            "daily_tx_min": PERSONA_PRESETS["individual"]["daily_tx_min"],
+            "daily_tx_max": PERSONA_PRESETS["individual"]["daily_tx_max"],
+            "daily_tx_target": 14,
             "status": "draft",
         },
     )
@@ -141,6 +145,8 @@ async def save_profile(
     *,
     persona_type: str,
     persona_config: dict[str, Any] | None = None,
+    daily_tx_min: int | None = None,
+    daily_tx_max: int | None = None,
     daily_tx_target: int | None = None,
     live_interval_hours: int | None = None,
     auto_classify: bool | None = None,
@@ -149,15 +155,31 @@ async def save_profile(
 ) -> dict[str, Any]:
     await _get_mono_account(user_id, account_id)
     merged = merge_persona_config(persona_type, persona_config or {})
+    if daily_tx_min is not None:
+        merged["daily_tx_min"] = daily_tx_min
+    if daily_tx_max is not None:
+        merged["daily_tx_max"] = daily_tx_max
+
+    lo, hi = resolve_daily_tx_range(
+        {
+            "persona_type": persona_type,
+            "persona_config": merged,
+            "daily_tx_min": daily_tx_min,
+            "daily_tx_max": daily_tx_max,
+            "daily_tx_target": daily_tx_target,
+        }
+    )
+
     patch: dict[str, Any] = {
         "persona_type": persona_type,
         "persona_config": merged,
+        "daily_tx_min": lo,
+        "daily_tx_max": hi,
+        "daily_tx_target": (lo + hi) // 2,
         "status": "draft",
     }
     if daily_tx_target is not None:
         patch["daily_tx_target"] = daily_tx_target
-    else:
-        patch["daily_tx_target"] = merged.get("daily_tx_target", 15)
     if live_interval_hours is not None:
         patch["live_interval_hours"] = live_interval_hours
     if auto_classify is not None:
@@ -292,14 +314,14 @@ async def fill_sparse_history(
     profile = await get_or_create_profile(user_id, account_id)
     persona_type = profile.get("persona_type") or "individual"
     persona_config = profile.get("persona_config") or {}
-    daily = int(profile.get("daily_tx_target") or 15)
+    daily_avg = sum(resolve_daily_tx_range(profile)) // 2
 
     start_dt = datetime.strptime(start[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     end_dt = datetime.strptime(end[:10], "%Y-%m-%d").replace(hour=23, minute=59, tzinfo=timezone.utc)
     days = max(1, (end_dt - start_dt).days + 1)
 
     if count is None:
-        count = min(500, max(10, int(days * daily * 0.3)))
+        count = min(500, max(10, int(days * daily_avg * 0.3)))
 
     run = await _start_run(
         profile,
@@ -354,11 +376,15 @@ async def run_live_drip(profile: dict[str, Any]) -> dict[str, Any]:
     account_id = profile["account_id"]
     persona_type = profile.get("persona_type") or "individual"
     persona_config = profile.get("persona_config") or {}
-    daily = int(profile.get("daily_tx_target") or 15)
     interval = int(profile.get("live_interval_hours") or 6)
-    batch = drip_batch_size(daily, interval)
+    batch = drip_batch_size_for_profile(profile)
+    daily_sample = sample_daily_tx_target(profile)
 
-    run = await _start_run(profile, "live_drip", {"batch_size": batch})
+    run = await _start_run(
+        profile,
+        "live_drip",
+        {"batch_size": batch, "daily_tx_sample": daily_sample},
+    )
     now = datetime.now(timezone.utc)
 
     try:

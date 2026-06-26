@@ -72,6 +72,8 @@ async def update_profile(
         account_id,
         persona_type=body.persona_type,
         persona_config=body.persona_config,
+        daily_tx_min=body.daily_tx_min,
+        daily_tx_max=body.daily_tx_max,
         daily_tx_target=body.daily_tx_target,
         live_interval_hours=body.live_interval_hours,
         auto_classify=body.auto_classify,
