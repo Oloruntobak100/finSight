@@ -1,6 +1,6 @@
 import asyncio
 
-from datetime import date
+from datetime import date, datetime
 
 from typing import Any
 
@@ -246,30 +246,37 @@ def _mono_enrichment_ratio(transactions: list[dict[str, Any]]) -> float:
 
 
 
+def _iso_to_mono_date(value: str | None) -> str | None:
+    """Convert ISO YYYY-MM-DD to Mono DD-MM-YYYY."""
+    if not value:
+        return None
+    text = value.strip()[:10]
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+        return parsed.strftime("%d-%m-%Y")
+    except ValueError:
+        return None
+
+
 async def _fetch_mono_transaction_pages(
-
     client: httpx.AsyncClient,
-
     mono_account_id: str,
-
+    start: str | None = None,
+    end: str | None = None,
 ) -> list[dict[str, Any]]:
-
     transactions: list[dict[str, Any]] = []
-
     page = 1
-
     while True:
-
+        params: dict[str, Any] = {"paginate": "true", "limit": 100, "page": page}
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
         txn_res = await client.get(
-
             f"{MONO_BASE}/v2/accounts/{mono_account_id}/transactions",
-
             headers=_mono_headers(),
-
-            params={"paginate": "true", "limit": 100, "page": page},
-
+            params=params,
             timeout=30.0,
-
         )
 
         txn_res.raise_for_status()
@@ -312,14 +319,12 @@ async def _run_mono_enrichment_jobs(
 
 
 async def _fetch_enriched_mono_transactions(
-
     client: httpx.AsyncClient,
-
     mono_account_id: str,
-
+    start: str | None = None,
+    end: str | None = None,
 ) -> list[dict[str, Any]]:
-
-    transactions = await _fetch_mono_transaction_pages(client, mono_account_id)
+    transactions = await _fetch_mono_transaction_pages(client, mono_account_id, start=start, end=end)
 
     if not transactions:
 
@@ -345,7 +350,7 @@ async def _fetch_enriched_mono_transactions(
 
         await asyncio.sleep(delay)
 
-        latest = await _fetch_mono_transaction_pages(client, mono_account_id)
+        latest = await _fetch_mono_transaction_pages(client, mono_account_id, start=start, end=end)
 
         if _mono_enrichment_ratio(latest) >= 0.35:
 
@@ -467,46 +472,36 @@ async def connect_mono_account(user_id: str, code: str, account_name: str) -> di
 
 
 
-async def sync_mono_transactions(user_id: str, account_id: str) -> int:
-
+async def sync_mono_transactions(
+    user_id: str,
+    account_id: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> int:
     sb = get_supabase()
-
     account_res = await run_db(
-
         lambda: sb.table("connected_accounts")
-
         .select("*")
-
         .eq("id", account_id)
-
         .eq("user_id", user_id)
-
         .single()
-
         .execute()
-
     )
-
     mono_account_id = account_res.data["external_account_id"]
 
-
-
     if not await _wait_for_transaction_data(mono_account_id):
-
         raise ValueError(
-
             "Mono account data is not ready yet. Wait a moment and try Sync All again."
-
         )
 
-
+    mono_start = _iso_to_mono_date(start)
+    mono_end = _iso_to_mono_date(end)
 
     user_rules = await load_user_category_rules(user_id, sb)
-
     async with httpx.AsyncClient() as client:
-
-        transactions = await _fetch_enriched_mono_transactions(client, mono_account_id)
-
+        transactions = await _fetch_enriched_mono_transactions(
+            client, mono_account_id, start=mono_start, end=mono_end
+        )
         count = await _upsert_mono_transactions(sb, user_id, account_id, transactions, user_rules)
 
 

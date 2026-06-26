@@ -47,9 +47,14 @@ async def list_transactions(
     account_id: Optional[str] = None,
     transaction_type: Optional[str] = None,
     is_recurring: Optional[bool] = None,
+    is_synthetic: Optional[bool] = None,
+    include_archived: bool = False,
 ) -> TransactionListResponse:
     sb = get_supabase()
     query = sb.table("transactions").select("*", count="exact").eq("user_id", user_id)
+
+    if not include_archived:
+        query = query.is_("archived_at", "null")
 
     if date_from:
         query = query.gte("transaction_date", date_from)
@@ -67,6 +72,8 @@ async def list_transactions(
         query = query.eq("transaction_type", transaction_type)
     if is_recurring is not None:
         query = query.eq("is_recurring", is_recurring)
+    if is_synthetic is not None:
+        query = query.eq("is_synthetic", is_synthetic)
 
     offset = (page - 1) * limit
     res = await run_db(

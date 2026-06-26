@@ -38,6 +38,7 @@ class TransactionResponse(BaseModel):
     source_provider: str
     external_id: str
     is_recurring: bool = False
+    is_synthetic: bool = False
     created_at: Optional[str] = None
     details: Optional[TransactionDetails] = None
     qb_sync_status: Optional[str] = None

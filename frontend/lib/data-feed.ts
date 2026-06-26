@@ -1,0 +1,118 @@
+import { apiFetch } from "@/lib/api";
+
+export type PersonaType = "individual" | "freelancer" | "small_business" | "retail";
+
+export interface SyntheticFeedProfile {
+  id: string;
+  account_id: string;
+  persona_type: PersonaType;
+  persona_config: Record<string, unknown>;
+  historical_start?: string | null;
+  historical_end?: string | null;
+  live_feed_enabled: boolean;
+  live_interval_hours: number;
+  daily_tx_target: number;
+  auto_classify: boolean;
+  status: string;
+  last_backfill_at?: string | null;
+  next_live_run_at?: string | null;
+  last_live_run_at?: string | null;
+}
+
+export interface SyntheticFeedAccount {
+  id: string;
+  account_name: string;
+  provider: string;
+  status: string;
+  last_synced_at: string | null;
+  profile?: SyntheticFeedProfile | null;
+  live_feed_enabled?: boolean;
+}
+
+export interface SyntheticFeedStatus {
+  enabled: boolean;
+  accounts: SyntheticFeedAccount[];
+}
+
+export interface SyntheticFeedRun {
+  id: string;
+  run_type: string;
+  transactions_created: number;
+  status: string;
+  error?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+}
+
+export interface AccountDetail {
+  profile: SyntheticFeedProfile;
+  runs: SyntheticFeedRun[];
+  presets: Record<string, Record<string, unknown>>;
+}
+
+export function fetchFeedStatus() {
+  return apiFetch<SyntheticFeedStatus>("/synthetic-feed/status");
+}
+
+export function fetchAccountDetail(accountId: string) {
+  return apiFetch<AccountDetail>(`/synthetic-feed/accounts/${accountId}`);
+}
+
+export function saveProfile(accountId: string, body: Record<string, unknown>) {
+  return apiFetch<{ profile: SyntheticFeedProfile }>(`/synthetic-feed/accounts/${accountId}/profile`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function importMonoHistory(accountId: string, start: string, end: string) {
+  return apiFetch<{ imported: number; start: string; end: string; run_id: string }>(
+    `/synthetic-feed/accounts/${accountId}/import-mono`,
+    { method: "POST", body: JSON.stringify({ start, end }) }
+  );
+}
+
+export function fillHistory(accountId: string, start: string, end: string, count?: number) {
+  return apiFetch<{ created: number; classified: number; run_id: string }>(
+    `/synthetic-feed/accounts/${accountId}/fill-history`,
+    { method: "POST", body: JSON.stringify({ start, end, count }) }
+  );
+}
+
+export function startLiveFeed(accountId: string) {
+  return apiFetch<{ profile: SyntheticFeedProfile }>(
+    `/synthetic-feed/accounts/${accountId}/live-feed/start`,
+    { method: "POST" }
+  );
+}
+
+export function pauseLiveFeed(accountId: string) {
+  return apiFetch<{ profile: SyntheticFeedProfile }>(
+    `/synthetic-feed/accounts/${accountId}/live-feed/pause`,
+    { method: "POST" }
+  );
+}
+
+export function runLiveDripNow(accountId: string) {
+  return apiFetch<{ created: number; classified: number; run_id: string; next_live_run_at?: string }>(
+    `/synthetic-feed/accounts/${accountId}/live-feed/run-now`,
+    { method: "POST" }
+  );
+}
+
+export function datePresetMonths(months: number): { start: string; end: string } {
+  const end = new Date();
+  const start = new Date();
+  start.setMonth(start.getMonth() - months);
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
+}
+
+export const PERSONA_LABELS: Record<PersonaType, string> = {
+  individual: "Individual",
+  freelancer: "Freelancer",
+  small_business: "Small business",
+  retail: "Retail shop",
+};

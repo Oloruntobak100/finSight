@@ -104,6 +104,7 @@ async def banking_dev_info() -> dict:
         "plaid_env": settings.plaid_env,
         "mono_env": settings.mono_env,
         "mono_configured": bool(settings.mono_public_key and settings.mono_secret_key),
+        "synthetic_feed_enabled": settings.synthetic_feed_allowed,
         "webhook_configured": bool(settings.plaid_webhook_url),
         "webhook_url": settings.plaid_webhook_url or None,
     }

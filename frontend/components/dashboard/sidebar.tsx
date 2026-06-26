@@ -16,6 +16,7 @@ import {
   Receipt,
   BarChart3,
   BookOpen,
+  FlaskConical,
 } from "lucide-react";
 import { NavProgress } from "@/components/dashboard/nav-progress";
 import { LoaderIcon } from "@/components/ui/page-loader";
@@ -39,6 +40,7 @@ const ANALYTICS_NAV: NavItem[] = [
 const MORE_NAV: NavItem[] = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/accounts", label: "Accounts", icon: Link2 },
+  { href: "/data-feed", label: "Data Feed", icon: FlaskConical },
   { href: "/subscriptions", label: "Subscriptions", icon: Repeat },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

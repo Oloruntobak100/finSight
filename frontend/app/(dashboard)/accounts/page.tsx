@@ -49,6 +49,7 @@ function AccountsPageContent() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [isSandbox, setIsSandbox] = useState(false);
   const [isMonoSandbox, setIsMonoSandbox] = useState(false);
+  const [syntheticFeedEnabled, setSyntheticFeedEnabled] = useState(false);
   const [monoPublicKey, setMonoPublicKey] = useState<string | null>(null);
   const [monoConfigured, setMonoConfigured] = useState(false);
   const [monoCustomer, setMonoCustomer] = useState<{ name: string; email: string } | null>(null);
@@ -98,12 +99,15 @@ function AccountsPageContent() {
       if (active) setPageLoading(false);
     });
 
-    apiFetch<{ plaid_env: string; mono_env: string; mono_configured: boolean }>("/banking/dev-info")
+    apiFetch<{ plaid_env: string; mono_env: string; mono_configured: boolean; synthetic_feed_enabled?: boolean }>(
+      "/banking/dev-info"
+    )
       .then((info) => {
         if (active) {
           setIsSandbox(info.plaid_env === "sandbox");
           setIsMonoSandbox(info.mono_env === "sandbox");
           setMonoConfigured(info.mono_configured);
+          setSyntheticFeedEnabled(Boolean(info.synthetic_feed_enabled));
         }
       })
       .catch(() => {});
@@ -484,6 +488,14 @@ function AccountsPageContent() {
                     <Button variant="outline" size="sm" onClick={() => setSimulateTarget(acc)}>
                       <FlaskConical className="h-3.5 w-3.5" />
                       Add test txn
+                    </Button>
+                  )}
+                  {syntheticFeedEnabled && acc.provider === "mono" && acc.status === "active" && (
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href={`/data-feed/${acc.id}`}>
+                        <FlaskConical className="h-3.5 w-3.5" />
+                        Data feed
+                      </Link>
                     </Button>
                   )}
                   <Button

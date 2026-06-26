@@ -44,6 +44,7 @@ interface Transaction {
   currency: string;
   transaction_type: "debit" | "credit";
   is_recurring: boolean;
+  is_synthetic?: boolean;
   source_provider?: string;
   details?: TransactionDetails | null;
 }
@@ -110,6 +111,7 @@ function TransactionsPageContent() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [recurringOnly, setRecurringOnly] = useState(false);
+  const [syntheticFilter, setSyntheticFilter] = useState("");
 
   const accountMap = Object.fromEntries(accounts.map((a) => [a.id, a.account_name]));
   const activeColumns = TRANSACTION_COLUMNS.filter((col) => visibleColumns[col.id]);
@@ -145,6 +147,8 @@ function TransactionsPageContent() {
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
     if (recurringOnly) params.set("is_recurring", "true");
+    if (syntheticFilter === "real") params.set("is_synthetic", "false");
+    if (syntheticFilter === "synthetic") params.set("is_synthetic", "true");
 
     try {
       const data = await apiFetch<TransactionList>(`/transactions?${params}`);
@@ -169,7 +173,7 @@ function TransactionsPageContent() {
         setLoading(false);
       }
     }
-  }, [page, accountId, transactionType, category, search, dateFrom, dateTo, recurringOnly]);
+  }, [page, accountId, transactionType, category, search, dateFrom, dateTo, recurringOnly, syntheticFilter]);
 
   useEffect(() => {
     const timer = setTimeout(() => setSearch(searchInput), 300);
@@ -211,6 +215,7 @@ function TransactionsPageContent() {
     setDateFrom("");
     setDateTo("");
     setRecurringOnly(false);
+    setSyntheticFilter("");
     setPage(1);
     if (typeof window !== "undefined" && searchParams.get("account_id")) {
       window.history.replaceState(null, "", "/transactions");
@@ -267,6 +272,9 @@ function TransactionsPageContent() {
             )}
             {txn.is_recurring && (
               <span className="mt-0.5 block text-[10px] text-amber-400/90">Recurring</span>
+            )}
+            {txn.is_synthetic && (
+              <span className="mt-0.5 block text-[10px] text-amber-400/80">Synthetic</span>
             )}
           </td>
         );
@@ -386,6 +394,21 @@ function TransactionsPageContent() {
                   {formatCategoryLabel(cat)}
                 </option>
               ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs text-slate-400">Source</label>
+            <select
+              className={selectClass}
+              value={syntheticFilter}
+              onChange={(e) => {
+                setSyntheticFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">All sources</option>
+              <option value="real">Real only</option>
+              <option value="synthetic">Synthetic only</option>
             </select>
           </div>
           <div>

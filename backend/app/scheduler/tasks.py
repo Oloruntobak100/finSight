@@ -106,3 +106,14 @@ async def daily_books_digest() -> None:
             await create_notification(uid, "books_digest", "Books daily digest", body)
         except Exception:
             logger.exception("Digest failed for user %s", uid)
+
+
+async def synthetic_feed_drip_all() -> None:
+    from app.services.synthetic_feed_service import synthetic_feed_drip_all as _drip
+
+    try:
+        count = await _drip()
+        if count:
+            logger.info("Synthetic feed drip processed %s profiles", count)
+    except Exception:
+        logger.exception("Synthetic feed drip job failed")

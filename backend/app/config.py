@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     mono_secret_key: str = ""
     mono_public_key: str = ""
 
+    # Synthetic data feed (dev / Mono sandbox assist)
+    enable_synthetic_feed: bool = False
+
     # QuickBooks
     quickbooks_client_id: str = ""
     quickbooks_client_secret: str = ""
@@ -100,6 +103,10 @@ class Settings(BaseSettings):
     def mono_env(self) -> str:
         key = (self.mono_secret_key or self.mono_public_key or "").lower()
         return "sandbox" if key.startswith("test_") else "live"
+
+    @property
+    def synthetic_feed_allowed(self) -> bool:
+        return self.enable_synthetic_feed or self.mono_env == "sandbox"
 
 
 @lru_cache
