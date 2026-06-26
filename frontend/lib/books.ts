@@ -7,9 +7,17 @@ export type QbSyncStatus =
   | "excluded"
   | "failed"
   | "skipped"
-  | "auto_approved";
+  | "auto_approved"
+  | "unclassified";
 
-export type SuggestionMethod = "rule" | "fingerprint" | "rag" | "llm" | "auto" | "manual";
+export type SuggestionMethod =
+  | "rule"
+  | "fingerprint"
+  | "rag"
+  | "llm"
+  | "auto"
+  | "manual"
+  | "auto_detect";
 
 export interface CoaAccount {
   id: string;
@@ -86,8 +94,15 @@ export interface BooksReadiness {
   qb_account_name?: string | null;
 }
 
+export interface BooksCoverage {
+  total_bank_transactions: number;
+  classified: number;
+  unclassified: number;
+}
+
 export interface BooksSummary {
   counts: Record<string, number>;
+  coverage?: BooksCoverage;
   automation?: AutomationSettings;
   readiness?: BooksReadiness;
 }
@@ -142,7 +157,7 @@ export async function upsertMapping(body: Omit<AccountMapping, "id">): Promise<A
 export async function classifyTransactions(
   transactionIds?: string[],
   options?: Pick<ApiFetchOptions, "timeoutMs">
-): Promise<{ classified: number }> {
+): Promise<{ classified: number; remaining_unclassified: number }> {
   return apiFetch("/books/classify", {
     method: "POST",
     body: JSON.stringify({ transaction_ids: transactionIds ?? null }),

@@ -53,10 +53,48 @@ QbSyncStatus = Literal[
     "skipped",
     "auto_approved",
 ]
-SuggestionMethod = Literal["rule", "fingerprint", "rag", "llm", "auto", "manual"]
+SuggestionMethod = Literal["rule", "fingerprint", "rag", "llm", "auto", "manual", "auto_detect"]
 CONFIDENCE_AUTO = 0.92
 CONFIDENCE_LLM_MIN = 0.85
 CONFIDENCE_FINGERPRINT_MIN = FINGERPRINT_MATCH_MIN
+CLASSIFY_BATCH_SIZE = 500
+CLASSIFY_MAX_ROWS = 5000
+
+
+def _apply_books_account_filter(query: Any, active_bank_ids: set[str]) -> Any:
+    """Include active bank rows and orphaned rows pending re-link after reconnect."""
+    if not active_bank_ids:
+        return query
+    id_list = ",".join(str(i) for i in active_bank_ids)
+    return query.or_(f"account_id.in.({id_list}),account_id.is.null")
+
+
+def _auto_detect_reason(txn: dict[str, Any], kind: PostingKind) -> str:
+    category = (txn.get("category") or "").strip()
+    txn_type = txn.get("transaction_type") or ""
+    cat_lower = category.lower()
+    if cat_lower in ("transfer in", "transfer out"):
+        direction = category
+    elif txn_type == "credit":
+        direction = "Transfer In"
+    else:
+        direction = "Transfer Out"
+
+    fp = extract_fingerprint(txn)
+    channel = fp.get("channel") or "OTHER"
+    channel_label = channel if channel and channel != "OTHER" else "NIP"
+    bank = fp.get("bank_code")
+    bank_suffix = f" via {bank}" if bank else ""
+
+    if kind == "balance_sheet":
+        label = category or "Balance sheet movement"
+        return f"{direction} — {label}{bank_suffix} (not P&L; teach as expense/income if misclassified)"
+    if kind == "reversal":
+        return f"Reversal — {category or 'bank reversal'} (net against original, not posted separately)"
+    return (
+        f"{direction} — {channel_label}{bank_suffix} "
+        f"(not P&L; teach as expense/income if misclassified)"
+    )
 
 
 def _resolve_llm_provider() -> str:
@@ -370,7 +408,8 @@ def classify_transaction(
             "qb_sync_status": "excluded",
             "qb_posting_type": "transfer",
             "qb_confidence": None,
-            "qb_confidence_reason": "Bank transfer — not posted to P&L (use Teach as expense/income if misclassified)",
+            "qb_suggestion_method": "auto_detect",
+            "qb_confidence_reason": _auto_detect_reason(txn, kind),
         }
 
     if kind == "reversal":
@@ -379,7 +418,8 @@ def classify_transaction(
             "qb_sync_status": "excluded",
             "qb_posting_type": "skip",
             "qb_confidence": None,
-            "qb_confidence_reason": "Reversal — net against original transaction, not posted separately",
+            "qb_suggestion_method": "auto_detect",
+            "qb_confidence_reason": _auto_detect_reason(txn, kind),
         }
 
     if kind == "balance_sheet":
@@ -388,10 +428,8 @@ def classify_transaction(
             "qb_sync_status": "excluded",
             "qb_posting_type": "skip",
             "qb_confidence": None,
-            "qb_confidence_reason": (
-                "Balance sheet movement (loan, savings, investment, equity) — not P&L "
-                "(use Teach as expense/income if misclassified)"
-            ),
+            "qb_suggestion_method": "auto_detect",
+            "qb_confidence_reason": _auto_detect_reason(txn, kind),
         }
 
     bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
@@ -503,52 +541,61 @@ def classify_transaction(
     }
 
 
-async def classify_user_transactions(
-    user_id: str,
-    transaction_ids: list[str] | None = None,
-) -> dict[str, Any]:
+async def _count_unclassified_transactions(user_id: str, active_bank_ids: set[str]) -> int:
     sb = get_supabase()
-    _, active_bank_ids = await _active_bank_accounts(user_id)
-    if not active_bank_ids:
-        return {"classified": 0}
+    query = (
+        sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+        .is_("qb_sync_status", "null")
+    )
+    query = _apply_books_account_filter(query, active_bank_ids)
+    res = await run_db(lambda: query.execute())
+    return res.count or 0
 
-    mappings = await get_mappings(user_id)
-    user_rules = await load_user_category_rules(user_id, sb)
-    coa = await list_coa(user_id)
-    coa_ids = _coa_ids(coa)
-    automation = await get_user_automation(user_id)
 
-    if transaction_ids:
-        res = await run_db(
-            lambda: sb.table("transactions")
-            .select("*")
-            .eq("user_id", user_id)
-            .in_("source_provider", list(BANK_PROVIDERS))
-            .in_("id", transaction_ids)
-            .limit(500)
-            .execute()
-        )
-        txns = res.data or []
-        txns = [t for t in txns if t.get("account_id") in active_bank_ids]
-    else:
-        res = await run_db(
-            lambda: sb.table("transactions")
-            .select("*")
-            .eq("user_id", user_id)
-            .in_("source_provider", list(BANK_PROVIDERS))
-            .in_("account_id", list(active_bank_ids))
-            .is_("qb_sync_status", "null")
-            .limit(200)
-            .execute()
-        )
-        txns = res.data or []
+async def _fetch_unclassified_batch(
+    user_id: str,
+    active_bank_ids: set[str],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    sb = get_supabase()
+    query = (
+        sb.table("transactions")
+        .select("*")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+        .is_("qb_sync_status", "null")
+    )
+    query = _apply_books_account_filter(query, active_bank_ids)
+    res = await run_db(lambda: query.limit(limit).execute())
+    return res.data or []
 
+
+async def _classify_transactions_batch(
+    user_id: str,
+    txns: list[dict[str, Any]],
+    *,
+    mappings: list[dict[str, Any]],
+    user_rules: dict[str, str],
+    coa: list[dict[str, Any]],
+    coa_ids: set[str],
+    automation: dict[str, Any],
+    active_bank_ids: set[str],
+    allow_reclassify: bool = False,
+) -> int:
+    sb = get_supabase()
     provider = _resolve_llm_provider()
     classified = 0
+
     for txn in txns:
+        if txn.get("account_id") and txn.get("account_id") not in active_bank_ids:
+            continue
         if txn.get("qb_sync_status") == "posted":
             continue
-        if not transaction_ids and txn.get("qb_sync_status") in (
+        if not allow_reclassify and txn.get("qb_sync_status") in (
             "excluded",
             "skipped",
             "failed",
@@ -633,7 +680,71 @@ async def classify_user_transactions(
         )
         classified += 1
 
-    return {"classified": classified}
+    return classified
+
+
+async def classify_user_transactions(
+    user_id: str,
+    transaction_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    sb = get_supabase()
+    _, active_bank_ids = await _active_bank_accounts(user_id)
+    if not active_bank_ids:
+        return {"classified": 0, "remaining_unclassified": 0}
+
+    mappings = await get_mappings(user_id)
+    user_rules = await load_user_category_rules(user_id, sb)
+    coa = await list_coa(user_id)
+    coa_ids = _coa_ids(coa)
+    automation = await get_user_automation(user_id)
+
+    total_classified = 0
+
+    if transaction_ids:
+        res = await run_db(
+            lambda: sb.table("transactions")
+            .select("*")
+            .eq("user_id", user_id)
+            .in_("source_provider", list(BANK_PROVIDERS))
+            .in_("id", transaction_ids)
+            .limit(500)
+            .execute()
+        )
+        txns = res.data or []
+        total_classified = await _classify_transactions_batch(
+            user_id,
+            txns,
+            mappings=mappings,
+            user_rules=user_rules,
+            coa=coa,
+            coa_ids=coa_ids,
+            automation=automation,
+            active_bank_ids=active_bank_ids,
+            allow_reclassify=True,
+        )
+    else:
+        while total_classified < CLASSIFY_MAX_ROWS:
+            txns = await _fetch_unclassified_batch(
+                user_id, active_bank_ids, limit=CLASSIFY_BATCH_SIZE
+            )
+            if not txns:
+                break
+            batch_count = await _classify_transactions_batch(
+                user_id,
+                txns,
+                mappings=mappings,
+                user_rules=user_rules,
+                coa=coa,
+                coa_ids=coa_ids,
+                automation=automation,
+                active_bank_ids=active_bank_ids,
+            )
+            total_classified += batch_count
+            if len(txns) < CLASSIFY_BATCH_SIZE:
+                break
+
+    remaining = await _count_unclassified_transactions(user_id, active_bank_ids)
+    return {"classified": total_classified, "remaining_unclassified": remaining}
 
 
 async def get_queue(
@@ -652,11 +763,15 @@ async def get_queue(
         .select("*", count="exact")
         .eq("user_id", user_id)
         .in_("source_provider", list(BANK_PROVIDERS))
-        .in_("account_id", list(active_bank_ids))
-        .not_.is_("qb_sync_status", "null")
     )
-    if status:
-        query = query.eq("qb_sync_status", status)
+    query = _apply_books_account_filter(query, active_bank_ids)
+
+    if status == "unclassified":
+        query = query.is_("qb_sync_status", "null")
+    else:
+        query = query.not_.is_("qb_sync_status", "null")
+        if status:
+            query = query.eq("qb_sync_status", status)
 
     offset = (page - 1) * limit
     res = await run_db(
@@ -691,15 +806,19 @@ async def get_queue_groups(
     if not active_bank_ids:
         return []
 
-    res = await run_db(
-        lambda: sb.table("transactions")
+    query = (
+        sb.table("transactions")
         .select("*")
         .eq("user_id", user_id)
         .in_("source_provider", list(BANK_PROVIDERS))
-        .in_("account_id", list(active_bank_ids))
-        .eq("qb_sync_status", status)
-        .execute()
     )
+    query = _apply_books_account_filter(query, active_bank_ids)
+    if status == "unclassified":
+        query = query.is_("qb_sync_status", "null")
+    else:
+        query = query.eq("qb_sync_status", status)
+
+    res = await run_db(lambda: query.execute())
     groups: dict[str, dict[str, Any]] = {}
     for row in res.data or []:
         key = row.get("payee_pattern") or row.get("merchant_name") or "unknown"
@@ -769,22 +888,32 @@ async def get_summary(user_id: str) -> dict[str, Any]:
     sb = get_supabase()
     _, active_bank_ids = await _active_bank_accounts(user_id)
     counts: dict[str, int] = {}
+    coverage = {
+        "total_bank_transactions": 0,
+        "classified": 0,
+        "unclassified": 0,
+    }
     if active_bank_ids:
-        res = await run_db(
-            lambda: sb.table("transactions")
+        query = (
+            sb.table("transactions")
             .select("qb_sync_status")
             .eq("user_id", user_id)
             .in_("source_provider", list(BANK_PROVIDERS))
-            .in_("account_id", list(active_bank_ids))
-            .not_.is_("qb_sync_status", "null")
-            .execute()
         )
+        query = _apply_books_account_filter(query, active_bank_ids)
+        res = await run_db(lambda: query.execute())
         for row in res.data or []:
-            st = row.get("qb_sync_status") or "unknown"
-            counts[st] = counts.get(st, 0) + 1
+            coverage["total_bank_transactions"] += 1
+            st = row.get("qb_sync_status")
+            if st is None:
+                coverage["unclassified"] += 1
+                counts["unclassified"] = counts.get("unclassified", 0) + 1
+            else:
+                coverage["classified"] += 1
+                counts[st] = counts.get(st, 0) + 1
     automation = await get_user_automation(user_id)
     readiness = await get_books_readiness(user_id)
-    return {"counts": counts, "automation": automation, "readiness": readiness}
+    return {"counts": counts, "coverage": coverage, "automation": automation, "readiness": readiness}
 
 
 async def exclude_transaction(user_id: str, transaction_id: str) -> dict[str, Any]:

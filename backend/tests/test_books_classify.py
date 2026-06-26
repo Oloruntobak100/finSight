@@ -283,7 +283,7 @@ def test_balance_sheet_excluded():
     }
     result = classify_transaction(txn, [], {}, _coa(), _coa_ids())
     assert result["qb_sync_status"] == "excluded"
-    assert "Balance sheet" in (result["qb_confidence_reason"] or "")
+    assert "not P&L" in (result["qb_confidence_reason"] or "")
 
 
 def test_refund_uses_expense_coa_path():
@@ -315,3 +315,19 @@ def test_refund_uses_expense_coa_path():
     assert result["qb_account_id"] == "42"
     assert result["qb_suggestion_method"] == "rule"
 
+
+
+def test_transfer_auto_detect_reason():
+    txn = {
+        "account_id": "bank-1",
+        "category": "Transfer In",
+        "merchant_name": "Samuel Olamide",
+        "description": "Received from Samuel Olamide via Kuda (NIP)",
+        "transaction_type": "credit",
+        "raw_metadata": {"narration": "NIP/Kuda/Samuel Olamide/Transfer", "metadata": {"channel": "NIP"}},
+    }
+    result = classify_transaction(txn, [], {}, _coa(), _coa_ids())
+    assert result["qb_sync_status"] == "excluded"
+    assert result["qb_suggestion_method"] == "auto_detect"
+    assert "Transfer In" in (result["qb_confidence_reason"] or "")
+    assert "NIP" in (result["qb_confidence_reason"] or "")

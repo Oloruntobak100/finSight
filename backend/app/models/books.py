@@ -44,6 +44,7 @@ class ClassifyRequest(BaseModel):
 
 class ClassifyResponse(BaseModel):
     classified: int
+    remaining_unclassified: int = 0
 
 
 class QueueItemResponse(BaseModel):
@@ -145,8 +146,15 @@ class BooksReadiness(BaseModel):
     qb_account_name: Optional[str] = None
 
 
+class BooksCoverage(BaseModel):
+    total_bank_transactions: int = 0
+    classified: int = 0
+    unclassified: int = 0
+
+
 class BooksSummaryResponse(BaseModel):
     counts: dict[str, int]
+    coverage: BooksCoverage = BooksCoverage()
     automation: Optional[dict[str, Any]] = None
     readiness: Optional[BooksReadiness] = None
 

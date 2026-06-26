@@ -35,6 +35,7 @@ import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
 const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
+  { id: "unclassified", label: "Unclassified" },
   { id: "pending", label: "Pending" },
   { id: "needs_review", label: "Needs review" },
   { id: "auto_approved", label: "Auto-approved" },
@@ -84,12 +85,13 @@ const selectClass =
 
 function confidenceBadge(
   confidence: number | null | undefined,
-  syncStatus?: QbSyncStatus | null
+  syncStatus?: QbSyncStatus | null,
+  reason?: string | null
 ) {
-  if (syncStatus === "excluded") {
+  if (syncStatus === "excluded" || syncStatus === "unclassified") {
     return (
-      <Badge className="bg-slate-600/20 text-slate-300" title="Detected as a bank transfer">
-        Transfer
+      <Badge className="bg-slate-600/20 text-slate-300" title={reason ?? undefined}>
+        —
       </Badge>
     );
   }
@@ -106,6 +108,18 @@ function confidenceBadge(
   return <Badge className="bg-red-600/20 text-red-400">Low</Badge>;
 }
 
+function directionLabel(row: QueueItem) {
+  const cat = (row.category || "").trim();
+  if (/transfer in/i.test(cat)) return "Transfer In";
+  if (/transfer out/i.test(cat)) return "Transfer Out";
+  return row.transaction_type === "credit" ? "Credit" : "Debit";
+}
+
+function signedAmount(row: QueueItem) {
+  const incoming = row.transaction_type === "credit";
+  return `${incoming ? "+" : "-"}${formatCurrency(row.amount, row.currency)}`;
+}
+
 function methodLabel(method: string | null | undefined) {
   if (!method) return null;
   const labels: Record<string, string> = {
@@ -115,6 +129,7 @@ function methodLabel(method: string | null | undefined) {
     llm: "AI",
     auto: "Auto",
     manual: "Manual",
+    auto_detect: "Auto-detect",
   };
   return labels[method] ?? method;
 }
@@ -135,6 +150,9 @@ function BooksQueueContent() {
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
+  const [coverage, setCoverage] = useState<{ total_bank_transactions: number; classified: number; unclassified: number } | null>(null);
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [classifyProgress, setClassifyProgress] = useState<string | null>(null);
   const [automation, setAutomation] = useState<AutomationSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -154,24 +172,47 @@ function BooksQueueContent() {
       ]);
       setItems(queue.items);
       setTotalPages(queue.total_pages);
+      setQueueTotal(queue.total);
       setSummary(sum.counts);
+      setCoverage(sum.coverage ?? null);
       setReadiness(sum.readiness ?? null);
       setGroups(grp);
     },
     []
   );
 
-  const runBackgroundClassify = useCallback(async () => {
+  const runClassifyAll = useCallback(async () => {
     setClassifying(true);
+    setClassifyProgress(null);
     try {
-      await classifyTransactions();
+      let remaining = 1;
+      let total = 0;
+      while (remaining > 0) {
+        const result = await classifyTransactions();
+        total += result.classified;
+        remaining = result.remaining_unclassified;
+        const sum = await getBooksSummary();
+        setCoverage(sum.coverage ?? null);
+        setSummary(sum.counts);
+        setClassifyProgress(
+          remaining > 0
+            ? `Classified ${total}… ${remaining} remaining`
+            : `Classified ${total} transaction(s)`
+        );
+        if (result.classified === 0) break;
+      }
       await refreshQueue(status, page, view);
     } catch {
-      /* non-blocking — queue already visible */
+      /* non-blocking */
     } finally {
       setClassifying(false);
+      setClassifyProgress(null);
     }
   }, [status, page, view, refreshQueue]);
+
+  const runBackgroundClassify = useCallback(async () => {
+    void runClassifyAll();
+  }, [runClassifyAll]);
 
   const load = useCallback(
     async (opts?: { classify?: boolean }) => {
@@ -186,6 +227,7 @@ function BooksQueueContent() {
         const sum = await getBooksSummary();
         setReadiness(sum.readiness ?? null);
         setSummary(sum.counts);
+        setCoverage(sum.coverage ?? null);
         setAutomation(sum.automation ?? null);
 
         if (!sum.readiness?.bank_connected) {
@@ -208,8 +250,7 @@ function BooksQueueContent() {
         if (opts?.classify) {
           setClassifying(true);
           try {
-            await classifyTransactions();
-            await refreshQueue(status, page, view);
+            await runClassifyAll();
           } finally {
             setClassifying(false);
           }
@@ -222,7 +263,7 @@ function BooksQueueContent() {
         setLoading(false);
       }
     },
-    [status, page, view, refreshQueue, runBackgroundClassify]
+    [status, page, view, refreshQueue, runBackgroundClassify, runClassifyAll]
   );
 
   useEffect(() => {
@@ -402,6 +443,20 @@ function BooksQueueContent() {
         </p>
       </div>
 
+      {coverage && coverage.total_bank_transactions > 0 && (
+        <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300">
+          <strong className="text-white">{coverage.total_bank_transactions}</strong> bank transactions ·{" "}
+          <strong className="text-emerald-400">{coverage.classified}</strong> classified ·{" "}
+          {coverage.unclassified > 0 ? (
+            <>
+              <strong className="text-amber-400">{coverage.unclassified}</strong> awaiting classification
+            </>
+          ) : (
+            <span className="text-emerald-400">all classified</span>
+          )}
+        </div>
+      )}
+
       {automation && (
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300">
           Auto-posting is{" "}
@@ -470,14 +525,13 @@ function BooksQueueContent() {
 
       {classifying && (
         <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-4 py-2 text-sm text-blue-200">
-          Classifying transactions (rules → fingerprints → similar approvals → AI)…
+          {classifyProgress ?? "Classifying transactions (rules → fingerprints → similar approvals → AI)…"}
         </div>
       )}
 
       <p className="text-xs text-slate-500">
         Classification order: mapping rules → learned fingerprints → similar past approvals (RAG) → AI.
-        Use Refresh to re-run on unmapped lines. Transfers holds NIP-style movements — teach as expense or
-        income if misclassified.
+        Use Refresh to classify all unmapped lines. Transfers holds NIP-style movements — review description and direction, then teach as expense or income if misclassified.
       </p>
 
       {view === "grouped" && groups.length > 0 && (
@@ -526,6 +580,8 @@ function BooksQueueContent() {
               )}
               <th className="p-3">Date</th>
               <th className="p-3">Merchant</th>
+              <th className="p-3">Description</th>
+              <th className="p-3">Direction</th>
               <th className="p-3">Type</th>
               <th className="p-3">QB Account</th>
               <th className="p-3">Confidence</th>
@@ -537,7 +593,7 @@ function BooksQueueContent() {
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={10} className="p-8 text-center text-slate-500">
+                <td colSpan={12} className="p-8 text-center text-slate-500">
                   No transactions in this queue.{" "}
                   <Link href="/books/mappings" className="text-blue-400 hover:underline">
                     Configure mappings
@@ -559,10 +615,26 @@ function BooksQueueContent() {
                   )}
                   <td className="p-3 text-slate-300">{row.transaction_date}</td>
                   <td className="p-3 text-white">
-                    {row.merchant_name || row.description || "—"}
+                    {row.merchant_name || "—"}
                     {row.payee_pattern && (
                       <span className="block text-xs text-slate-500">{row.payee_pattern}</span>
                     )}
+                  </td>
+                  <td className="p-3 text-slate-300 max-w-[240px]">
+                    <span className="line-clamp-2" title={row.description ?? undefined}>
+                      {row.description || "—"}
+                    </span>
+                  </td>
+                  <td className="p-3">
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs ${
+                        row.transaction_type === "credit"
+                          ? "bg-emerald-900/40 text-emerald-300"
+                          : "bg-slate-800 text-slate-300"
+                      }`}
+                    >
+                      {directionLabel(row)}
+                    </span>
                   </td>
                   <td className="p-3">
                     <span
@@ -611,15 +683,17 @@ function BooksQueueContent() {
                     )}
                   </td>
                   <td className="p-3" title={row.qb_confidence_reason ?? undefined}>
-                    {confidenceBadge(row.qb_confidence, row.qb_sync_status)}
+                    {confidenceBadge(row.qb_confidence, row.qb_sync_status, row.qb_confidence_reason)}
                   </td>
-                  <td className="p-3 text-slate-400">
-                    {row.qb_sync_status === "excluded"
-                      ? "Transfer"
-                      : methodLabel(row.qb_suggestion_method) ?? "—"}
+                  <td className="p-3 text-slate-400" title={row.qb_confidence_reason ?? undefined}>
+                    {methodLabel(row.qb_suggestion_method) ?? (row.qb_sync_status === "unclassified" ? "—" : "—")}
                   </td>
-                  <td className="p-3 text-right font-medium text-white">
-                    {formatCurrency(row.amount, row.currency)}
+                  <td
+                    className={`p-3 text-right font-medium ${
+                      row.transaction_type === "credit" ? "text-green-400" : "text-white"
+                    }`}
+                  >
+                    {signedAmount(row)}
                   </td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-2">
@@ -667,7 +741,17 @@ function BooksQueueContent() {
                           </Button>
                         </>
                       )}
-                      {status !== "posted" && status !== "excluded" && (
+                      {status === "unclassified" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={actionLoading === row.id || classifying}
+                          onClick={() => load({ classify: true })}
+                        >
+                          Classify
+                        </Button>
+                      )}
+                      {status !== "posted" && status !== "excluded" && status !== "unclassified" && (
                         <Button size="sm" variant="ghost" onClick={() => handleExclude(row.id)}>
                           Exclude
                         </Button>
@@ -691,7 +775,8 @@ function BooksQueueContent() {
             </Link>
           )}
           <span className="flex items-center px-3 text-sm text-slate-500">
-            Page {page} of {totalPages}
+            Showing {(page - 1) * 20 + 1}–{Math.min(page * 20, queueTotal)} of {queueTotal} · Page {page} of{" "}
+            {totalPages}
           </span>
           {page < totalPages && (
             <Link href={`/books?status=${status}&page=${page + 1}&view=${view}`}>
