@@ -67,10 +67,10 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="page-enter space-y-6">
+    <div className="page-enter min-w-0 space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-        <p className="text-slate-400">Your financial overview at a glance</p>
+        <h1 className="text-xl font-bold text-white md:text-2xl">Dashboard</h1>
+        <p className="text-sm text-slate-500">Financial overview</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -128,8 +128,8 @@ export default function DashboardPage() {
         <CardHeader>
           <CardTitle>Recent Transactions</CardTitle>
         </CardHeader>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="overflow-hidden">
+          <table className="table-fit text-sm">
             <thead>
               <tr className="border-b border-slate-800 text-left text-slate-400">
                 <th className="pb-2">Date</th>
@@ -151,9 +151,11 @@ export default function DashboardPage() {
                 txns.slice(0, 10).map((txn) => (
                   <tr key={txn.id} className="border-b border-slate-800/50">
                     <td className="py-3 text-slate-400">{txn.transaction_date}</td>
-                    <td className="py-3 text-white">{txn.merchant_name}</td>
-                    <td className="py-3">
-                      <Badge>{txn.category || "Uncategorized"}</Badge>
+                    <td className="max-w-0 py-3">
+                      <span className="cell-truncate block text-white">{txn.merchant_name}</span>
+                    </td>
+                    <td className="max-w-0 py-3">
+                      <Badge className="max-w-full truncate">{txn.category || "Uncategorized"}</Badge>
                     </td>
                     <td
                       className={`py-3 text-right ${txn.transaction_type === "credit" ? "text-green-400" : "text-white"}`}

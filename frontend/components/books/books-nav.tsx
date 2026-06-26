@@ -13,7 +13,7 @@ export function BooksNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="flex gap-1 overflow-x-auto rounded-lg border border-slate-800/60 bg-slate-950/40 p-1">
+    <nav className="flex flex-wrap gap-1 rounded-lg border border-slate-800/60 bg-slate-950/40 p-1">
       {TABS.map((tab) => {
         const active = tab.exact ? pathname === tab.href : pathname.startsWith(tab.href);
         return (

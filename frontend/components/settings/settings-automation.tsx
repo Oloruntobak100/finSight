@@ -140,13 +140,13 @@ export function SettingsAutomation({ email, fullName, country, currency, plan }:
         <CardHeader>
           <CardTitle>Learning progress</CardTitle>
         </CardHeader>
-        <div className="overflow-x-auto px-6 pb-6">
+        <div className="overflow-hidden px-6 pb-6">
           {learning.length === 0 ? (
             <p className="text-sm text-slate-500">
               Approve transactions in Books to train the AI. Patterns will appear here.
             </p>
           ) : (
-            <table className="w-full text-sm">
+            <table className="table-fit text-sm">
               <thead>
                 <tr className="text-left text-slate-500">
                   <th className="pb-2">Payee pattern</th>

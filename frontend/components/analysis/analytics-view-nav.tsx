@@ -21,7 +21,7 @@ export function AnalyticsViewNav() {
   const current = (searchParams.get("view") as AnalyticsView) || "overview";
 
   return (
-    <nav className="flex gap-1 overflow-x-auto rounded-lg border border-slate-800/60 bg-slate-950/40 p-1">
+    <nav className="flex flex-wrap gap-1 rounded-lg border border-slate-800/60 bg-slate-950/40 p-1">
       {VIEWS.map((v) => {
         const params = new URLSearchParams(searchParams.toString());
         params.set("view", v.id);

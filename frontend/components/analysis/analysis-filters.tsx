@@ -63,7 +63,7 @@ export function AnalysisFiltersBar({
           ))}
         </div>
 
-        <div className="grid min-w-[130px] flex-1 gap-1">
+        <div className="grid min-w-0 flex-1 gap-1">
           <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">From</label>
           <DateInput
             value={filters.dateFrom}
@@ -71,7 +71,7 @@ export function AnalysisFiltersBar({
             className="h-10"
           />
         </div>
-        <div className="grid min-w-[130px] flex-1 gap-1">
+        <div className="grid min-w-0 flex-1 gap-1">
           <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">To</label>
           <DateInput
             value={filters.dateTo}
@@ -80,7 +80,7 @@ export function AnalysisFiltersBar({
           />
         </div>
 
-        <div className="grid min-w-[180px] flex-1 gap-1">
+        <div className="grid min-w-0 flex-1 gap-1">
           <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Accounts</label>
           <AccountPicker
             accounts={accounts}
@@ -90,7 +90,7 @@ export function AnalysisFiltersBar({
           />
         </div>
 
-        <div className="grid min-w-[120px] gap-1">
+        <div className="grid min-w-0 gap-1 sm:min-w-[100px]">
           <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Provider</label>
           <select
             className={selectClass}

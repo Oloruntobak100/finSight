@@ -18,9 +18,9 @@ export function DashboardHeader({ email, plan = "free" }: { email?: string; plan
   return (
     <header className="flex h-16 items-center justify-between border-b border-slate-800 px-6">
       <div />
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-2 md:gap-3">
         <Badge className="capitalize">{plan}</Badge>
-        <span className="text-sm text-slate-400">{email}</span>
+        <span className="hidden max-w-[160px] truncate text-sm text-slate-400 lg:inline">{email}</span>
         <Button variant="outline" size="sm" onClick={signOut}>
           Sign out
         </Button>

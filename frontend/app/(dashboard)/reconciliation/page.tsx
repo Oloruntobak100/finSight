@@ -143,8 +143,8 @@ export default function ReconciliationPage() {
             ))}
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-slate-800">
-            <table className="w-full text-sm">
+          <div className="overflow-hidden rounded-xl border border-slate-800">
+            <table className="table-fit text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-left text-slate-500">
                   <th className="p-3">Date</th>

@@ -253,19 +253,20 @@ function TransactionsPageContent() {
         );
       case "counterparty":
         return (
-          <td key={columnId} className="py-3 pr-3">
-            <div className="font-medium text-white">{details.counterparty || "—"}</div>
-            {details.counterparty_bank && (
-              <p className="mt-0.5 text-xs text-slate-500">{details.counterparty_bank}</p>
-            )}
-            {details.summary && (
-              <p className="mt-1 text-xs text-slate-500">{details.summary}</p>
-            )}
-            {details.location && (
-              <p className="mt-0.5 text-xs text-slate-600">{details.location}</p>
+          <td key={columnId} className="max-w-0 py-3 pr-3">
+            <div className="cell-truncate font-medium text-white" title={details.counterparty || undefined}>
+              {details.counterparty || "—"}
+            </div>
+            {(details.summary || details.counterparty_bank) && (
+              <p
+                className="cell-truncate mt-0.5 text-xs text-slate-500"
+                title={[details.summary, details.counterparty_bank].filter(Boolean).join(" · ")}
+              >
+                {details.summary || details.counterparty_bank}
+              </p>
             )}
             {txn.is_recurring && (
-              <span className="mt-1 block text-xs text-amber-400/90">Recurring</span>
+              <span className="mt-0.5 block text-[10px] text-amber-400/90">Recurring</span>
             )}
           </td>
         );
@@ -325,17 +326,12 @@ function TransactionsPageContent() {
   }
 
   return (
-    <div className="page-enter space-y-6">
+    <div className="page-enter min-w-0 space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-white">Transactions</h1>
-        <p className="text-slate-400">
-          Counterparty, channel, and bank memo details for every connected account
+        <h1 className="text-xl font-bold text-white md:text-2xl">Transactions</h1>
+        <p className="text-sm text-slate-500">
+          {accountId ? `Filtered · ${accountMap[accountId] || "selected account"}` : "All connected accounts"}
         </p>
-        {accountId && (
-          <p className="mt-1 text-sm text-blue-400">
-            Filtered to: {accountMap[accountId] || "selected account"}
-          </p>
-        )}
       </div>
 
       <div className={cardClass}>
@@ -485,8 +481,8 @@ function TransactionsPageContent() {
             </Button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-sm">
+        <div className="overflow-hidden">
+          <table className="table-fit text-sm">
             <thead>
               <tr className="border-b border-slate-800 text-left text-slate-400">
                 {activeColumns.map((col) => (

@@ -23,11 +23,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen overflow-x-hidden">
       <Sidebar />
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
         <DashboardHeader email={user.email} plan={profile?.plan_tier || "free"} />
-        <main className="flex-1 overflow-auto p-6">{children}</main>
+        <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 md:p-6">{children}</main>
       </div>
     </div>
   );

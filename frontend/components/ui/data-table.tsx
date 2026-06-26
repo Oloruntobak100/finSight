@@ -107,8 +107,7 @@ export function DataTable<T extends { id?: string }>({
       </div>
 
       <div className="overflow-hidden rounded-lg border border-slate-800/80">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <table className="table-fit text-sm">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-900/80">
                 {columns.map((col) => (
@@ -160,7 +159,6 @@ export function DataTable<T extends { id?: string }>({
               ))}
             </tbody>
           </table>
-        </div>
       </div>
 
       <div className="flex items-center justify-between text-xs text-slate-500">

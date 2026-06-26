@@ -35,10 +35,10 @@ import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
 const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
-  { id: "unclassified", label: "Unclassified" },
+  { id: "unclassified", label: "New" },
   { id: "pending", label: "Pending" },
-  { id: "needs_review", label: "Needs review" },
-  { id: "auto_approved", label: "Auto-approved" },
+  { id: "needs_review", label: "Review" },
+  { id: "auto_approved", label: "Auto" },
   { id: "posted", label: "Posted" },
   { id: "excluded", label: "Transfers" },
   { id: "failed", label: "Failed" },
@@ -81,7 +81,7 @@ function coaForRow(
 }
 
 const selectClass =
-  "h-9 min-w-[160px] rounded-md border border-slate-700 bg-slate-900 px-2 text-sm text-white";
+  "h-8 w-full max-w-full rounded-md border border-slate-700 bg-slate-900 px-1.5 text-xs text-white";
 
 function confidenceBadge(
   confidence: number | null | undefined,
@@ -118,6 +118,30 @@ function directionLabel(row: QueueItem) {
 function signedAmount(row: QueueItem) {
   const incoming = row.transaction_type === "credit";
   return `${incoming ? "+" : "-"}${formatCurrency(row.amount, row.currency)}`;
+}
+
+function kindLabel(row: QueueItem) {
+  const type = postingTypeLabel(row.qb_posting_type, row.transaction_type, row.qb_confidence_reason);
+  const direction = directionLabel(row);
+  return { type, direction, title: `${direction} · ${type}` };
+}
+
+function matchLabel(
+  confidence: number | null | undefined,
+  syncStatus?: QbSyncStatus | null,
+  method?: string | null,
+  reason?: string | null
+) {
+  const methodText = methodLabel(method);
+  const title = [reason, methodText].filter(Boolean).join(" · ") || undefined;
+  if (syncStatus === "excluded" || syncStatus === "unclassified") {
+    return { badge: confidenceBadge(confidence, syncStatus, reason), sub: null, title };
+  }
+  return {
+    badge: confidenceBadge(confidence, syncStatus, reason),
+    sub: methodText,
+    title,
+  };
 }
 
 function methodLabel(method: string | null | undefined) {
@@ -482,58 +506,60 @@ function BooksQueueContent() {
   }
 
   return (
-    <div className="page-enter space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Books Queue</h1>
-        <p className="text-slate-400">
-          Review all bank debits and credits. Train FinSight to map each line to QuickBooks — expenses,
-          income, fees, or transfers.
-        </p>
+    <div className="page-enter min-w-0 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold text-white md:text-2xl">Books Queue</h1>
+          <p className="mt-0.5 text-sm text-slate-500">
+            {coverage && coverage.total_bank_transactions > 0 ? (
+              <>
+                {coverage.total_bank_transactions} transactions
+                {coverage.unclassified > 0 ? (
+                  <> · <span className="text-amber-400">{coverage.unclassified} unmapped</span></>
+                ) : (
+                  <> · <span className="text-emerald-400">all mapped</span></>
+                )}
+              </>
+            ) : (
+              "Map bank lines to QuickBooks"
+            )}
+            {automation && (
+              <>
+                {" · "}
+                Auto-post{" "}
+                <span className={automation.auto_approve_enabled ? "text-emerald-400" : "text-slate-400"}>
+                  {automation.auto_approve_enabled ? "on" : "off"}
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => refreshData({ classify: true })}
+          loading={classifying}
+          loadingLabel="Classifying…"
+          className="shrink-0 text-slate-300"
+        >
+          <RefreshCw className="mr-1 h-3.5 w-3.5" />
+          Refresh
+        </Button>
       </div>
 
-      {coverage && coverage.total_bank_transactions > 0 && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300">
-          <strong className="text-white">{coverage.total_bank_transactions}</strong> bank transactions ·{" "}
-          <strong className="text-emerald-400">{coverage.classified}</strong> classified ·{" "}
-          {coverage.unclassified > 0 ? (
-            <>
-              <strong className="text-amber-400">{coverage.unclassified}</strong> awaiting classification
-            </>
-          ) : (
-            <span className="text-emerald-400">all classified</span>
-          )}
-        </div>
-      )}
-
-      {automation && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300">
-          Auto-posting is{" "}
-          <strong className={automation.auto_approve_enabled ? "text-emerald-400" : "text-amber-400"}>
-            {automation.auto_approve_enabled ? "ON" : "OFF"}
-          </strong>
-          {automation.auto_approve_enabled && (
-            <span> at {(automation.auto_approve_threshold * 100).toFixed(0)}% confidence</span>
-          )}
-          .{" "}
-          <Link href="/settings" className="text-blue-400 hover:underline">
-            Settings
-          </Link>
-        </div>
-      )}
-
       {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           {error}
         </div>
       )}
       {info && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
           {info}
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
         {STATUS_TABS.map((tab) => {
           const count = summary[tab.id] ?? 0;
           const active = status === tab.id;
@@ -541,46 +567,30 @@ function BooksQueueContent() {
             <Link
               key={tab.id}
               href={`/books?status=${tab.id}&view=${view}`}
-              className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+              className={`rounded-md px-2.5 py-1 text-xs transition-colors md:text-sm ${
                 active
                   ? "bg-blue-600/20 text-blue-400 ring-1 ring-blue-500/30"
                   : "bg-slate-800/50 text-slate-400 hover:text-white"
               }`}
             >
               {tab.label}
-              {count > 0 && <span className="ml-1.5 text-xs opacity-70">({count})</span>}
+              {count > 0 && <span className="ml-1 opacity-70">({count})</span>}
             </Link>
           );
         })}
         <Link
           href={`/books?status=${status}&view=${view === "grouped" ? "list" : "grouped"}`}
-          className="rounded-lg bg-slate-800/50 px-3 py-1.5 text-sm text-slate-400 hover:text-white"
+          className="rounded-md bg-slate-800/50 px-2.5 py-1 text-xs text-slate-400 hover:text-white md:text-sm"
         >
-          {view === "grouped" ? "List view" : "Grouped by payee"}
+          {view === "grouped" ? "List" : "Grouped"}
         </Link>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => refreshData({ classify: true })}
-          loading={classifying}
-          loadingLabel="Classifying…"
-          className="ml-auto text-slate-400"
-        >
-          <RefreshCw className="mr-1 h-3.5 w-3.5" />
-          Refresh
-        </Button>
       </div>
 
       {classifying && (
-        <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-4 py-2 text-sm text-blue-200">
-          {classifyProgress ?? "Classifying transactions (rules → fingerprints → similar approvals → AI)…"}
+        <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-3 py-2 text-sm text-blue-200">
+          {classifyProgress ?? "Classifying…"}
         </div>
       )}
-
-      <p className="text-xs text-slate-500">
-        Classification order: mapping rules → learned fingerprints → similar past approvals (RAG) → AI.
-        Use Refresh to classify all unmapped lines. Transfers holds NIP-style movements — review description and direction, then teach as expense or income if misclassified.
-      </p>
 
       {view === "grouped" && groups.length > 0 && (
         <div className="space-y-3">
@@ -617,49 +627,67 @@ function BooksQueueContent() {
         </Button>
       )}
 
-      <div className="relative overflow-x-auto rounded-xl border border-slate-800/70">
+      <div className="relative overflow-hidden rounded-xl border border-slate-800/70">
         {queueLoading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/55 backdrop-blur-[1px]">
             <PageLoader variant="compact" message="" />
           </div>
         )}
         <table
-          className={`w-full min-w-[960px] text-sm transition-opacity ${queueLoading ? "pointer-events-none opacity-40" : ""}`}
+          className={`table-fit text-sm transition-opacity ${queueLoading ? "pointer-events-none opacity-40" : ""}`}
         >
+          <colgroup>
+            {(status === "pending" || status === "needs_review") && <col className="w-8" />}
+            <col className="w-[4.5rem]" />
+            <col />
+            <col className="w-[5.5rem]" />
+            <col className="w-[22%]" />
+            <col className="w-[4.5rem]" />
+            <col className="w-[6.5rem]" />
+            <col className="w-[5.5rem]" />
+          </colgroup>
           <thead>
-            <tr className="border-b border-slate-800 text-left text-slate-500">
+            <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
               {(status === "pending" || status === "needs_review") && (
-                <th className="p-3 w-8">
+                <th className="px-2 py-2">
                   <span className="sr-only">Select</span>
                 </th>
               )}
-              <th className="p-3">Date</th>
-              <th className="p-3">Merchant</th>
-              <th className="p-3">Description</th>
-              <th className="p-3">Direction</th>
-              <th className="p-3">Type</th>
-              <th className="p-3">QB Account</th>
-              <th className="p-3">Confidence</th>
-              <th className="p-3">Method</th>
-              <th className="p-3 text-right">Amount</th>
-              <th className="p-3">Actions</th>
+              <th className="px-2 py-2">Date</th>
+              <th className="px-2 py-2">Payee</th>
+              <th className="px-2 py-2">Kind</th>
+              <th className="px-2 py-2">Account</th>
+              <th className="px-2 py-2">Match</th>
+              <th className="px-2 py-2 text-right">Amount</th>
+              <th className="px-2 py-2">Actions</th>
             </tr>
           </thead>
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={12} className="p-8 text-center text-slate-500">
+                <td
+                  colSpan={status === "pending" || status === "needs_review" ? 8 : 7}
+                  className="p-8 text-center text-slate-500"
+                >
                   No transactions in this queue.{" "}
                   <Link href="/books/mappings" className="text-blue-400 hover:underline">
-                    Configure mappings
+                    Mappings
                   </Link>
                 </td>
               </tr>
             ) : (
-              items.map((row) => (
+              items.map((row) => {
+                const kind = kindLabel(row);
+                const match = matchLabel(
+                  row.qb_confidence,
+                  row.qb_sync_status,
+                  row.qb_suggestion_method,
+                  row.qb_confidence_reason
+                );
+                return (
                 <tr key={row.id} className="border-b border-slate-800/50 hover:bg-slate-900/40">
                   {(status === "pending" || status === "needs_review") && (
-                    <td className="p-3">
+                    <td className="px-2 py-2">
                       <input
                         type="checkbox"
                         checked={selected.has(row.id)}
@@ -668,32 +696,21 @@ function BooksQueueContent() {
                       />
                     </td>
                   )}
-                  <td className="p-3 text-slate-300">{row.transaction_date}</td>
-                  <td className="p-3 text-white">
-                    {row.merchant_name || "—"}
-                    {row.payee_pattern && (
-                      <span className="block text-xs text-slate-500">{row.payee_pattern}</span>
-                    )}
-                  </td>
-                  <td className="p-3 text-slate-300 max-w-[240px]">
-                    <span className="line-clamp-2" title={row.description ?? undefined}>
-                      {row.description || "—"}
-                    </span>
-                  </td>
-                  <td className="p-3">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs ${
-                        row.transaction_type === "credit"
-                          ? "bg-emerald-900/40 text-emerald-300"
-                          : "bg-slate-800 text-slate-300"
-                      }`}
+                  <td className="px-2 py-2 text-xs text-slate-400">{row.transaction_date.slice(5)}</td>
+                  <td className="px-2 py-2 min-w-0">
+                    <div className="cell-truncate font-medium text-white" title={row.merchant_name ?? undefined}>
+                      {row.merchant_name || "—"}
+                    </div>
+                    <div
+                      className="cell-truncate text-xs text-slate-500"
+                      title={row.description ?? row.payee_pattern ?? undefined}
                     >
-                      {directionLabel(row)}
-                    </span>
+                      {row.description || row.payee_pattern || "—"}
+                    </div>
                   </td>
-                  <td className="p-3">
+                  <td className="px-2 py-2" title={kind.title}>
                     <span
-                      className={`rounded px-2 py-0.5 text-xs ${
+                      className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
                         row.qb_posting_type === "deposit" ||
                         (row.transaction_type === "credit" &&
                           row.qb_posting_type !== "refund" &&
@@ -709,14 +726,10 @@ function BooksQueueContent() {
                                 : "bg-blue-900/40 text-blue-300"
                       }`}
                     >
-                      {postingTypeLabel(
-                        row.qb_posting_type,
-                        row.transaction_type,
-                        row.qb_confidence_reason
-                      )}
+                      {kind.type}
                     </span>
                   </td>
-                  <td className="p-3">
+                  <td className="px-2 py-2 min-w-0">
                     {(status === "pending" || status === "needs_review") &&
                     coaForRow(row, expenseCoa, incomeCoa).length > 0 ? (
                       <select
@@ -726,7 +739,7 @@ function BooksQueueContent() {
                           setAccountEdits((prev) => ({ ...prev, [row.id]: e.target.value }))
                         }
                       >
-                        <option value="">Select account…</option>
+                        <option value="">Select…</option>
                         {coaForRow(row, expenseCoa, incomeCoa).map((a) => (
                           <option key={a.qb_account_id} value={a.qb_account_id}>
                             {a.name}
@@ -734,45 +747,49 @@ function BooksQueueContent() {
                         ))}
                       </select>
                     ) : (
-                      <span className="text-slate-300">{row.qb_account_name || "—"}</span>
+                      <span className="cell-truncate block text-slate-300" title={row.qb_account_name ?? undefined}>
+                        {row.qb_account_name || "—"}
+                      </span>
                     )}
                   </td>
-                  <td className="p-3" title={row.qb_confidence_reason ?? undefined}>
-                    {confidenceBadge(row.qb_confidence, row.qb_sync_status, row.qb_confidence_reason)}
-                  </td>
-                  <td className="p-3 text-slate-400" title={row.qb_confidence_reason ?? undefined}>
-                    {methodLabel(row.qb_suggestion_method) ?? (row.qb_sync_status === "unclassified" ? "—" : "—")}
+                  <td className="px-2 py-2" title={match.title}>
+                    <div className="flex flex-col gap-0.5">
+                      {match.badge}
+                      {match.sub && <span className="text-[10px] text-slate-500">{match.sub}</span>}
+                    </div>
                   </td>
                   <td
-                    className={`p-3 text-right font-medium ${
+                    className={`px-2 py-2 text-right text-xs font-medium tabular-nums ${
                       row.transaction_type === "credit" ? "text-green-400" : "text-white"
                     }`}
                   >
                     {signedAmount(row)}
                   </td>
-                  <td className="p-3">
-                    <div className="flex flex-wrap gap-2">
+                  <td className="px-2 py-2">
+                    <div className="flex flex-wrap gap-1">
                       {(status === "pending" || status === "needs_review") && (
                         <>
                           <Button
                             size="sm"
+                            className="h-7 px-2 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleApprove(row, true)}
                           >
-                            Approve & Post
+                            Post
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
+                            className="h-7 px-2 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleApprove(row, false)}
                           >
-                            Approve
+                            Save
                           </Button>
                         </>
                       )}
                       {status === "failed" && (
-                        <Button size="sm" variant="outline" onClick={() => handlePost(row.id)}>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => handlePost(row.id)}>
                           Retry
                         </Button>
                       )}
@@ -781,18 +798,20 @@ function BooksQueueContent() {
                           <Button
                             size="sm"
                             variant="outline"
+                            className="h-7 px-2 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleTeachIntent(row.id, "expense")}
                           >
-                            Teach as expense
+                            Expense
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
+                            className="h-7 px-2 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleTeachIntent(row.id, "income")}
                           >
-                            Teach as income
+                            Income
                           </Button>
                         </>
                       )}
@@ -800,21 +819,23 @@ function BooksQueueContent() {
                         <Button
                           size="sm"
                           variant="outline"
+                          className="h-7 px-2 text-xs"
                           disabled={actionLoading === row.id || classifying}
                           onClick={() => refreshData({ classify: true })}
                         >
-                          Classify
+                          Map
                         </Button>
                       )}
                       {status !== "posted" && status !== "excluded" && status !== "unclassified" && (
-                        <Button size="sm" variant="ghost" onClick={() => handleExclude(row.id)}>
-                          Exclude
+                        <Button size="sm" variant="ghost" className="h-7 px-1.5 text-xs" onClick={() => handleExclude(row.id)}>
+                          Skip
                         </Button>
                       )}
                     </div>
                   </td>
                 </tr>
-              ))
+              );
+              })
             )}
           </tbody>
         </table>

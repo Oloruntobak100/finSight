@@ -70,7 +70,7 @@ export function AccountPicker({ accounts, selectedIds, onChange, providerFilter 
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "flex h-10 w-full min-w-[200px] items-center justify-between gap-2 rounded-lg border px-3 text-sm transition-colors",
+          "flex h-10 w-full min-w-0 items-center justify-between gap-2 rounded-lg border px-3 text-sm transition-colors",
           open
             ? "border-blue-500/60 bg-slate-900 ring-2 ring-blue-500/20"
             : "border-slate-700 bg-slate-900/80 hover:border-slate-600",
@@ -85,7 +85,7 @@ export function AccountPicker({ accounts, selectedIds, onChange, providerFilter 
       </button>
 
       {open && (
-        <div className="absolute left-0 z-50 mt-2 w-full min-w-[320px] rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-2xl">
+        <div className="absolute left-0 z-50 mt-2 w-full max-w-sm rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-2xl">
           <div className="relative mb-3">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
             <Input

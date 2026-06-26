@@ -128,8 +128,8 @@ function DataTable({
     return <p className="py-6 text-center text-sm text-slate-500">{empty}</p>;
   }
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className="overflow-hidden">
+      <table className="table-fit text-sm">
         <thead>
           <tr className="border-b border-slate-800 text-left text-slate-400">
             {headers.map((h) => (
@@ -336,7 +336,7 @@ export default function ReportsPage() {
         ))}
       </div>
 
-      <div className="flex gap-1 overflow-x-auto rounded-lg border border-slate-800/60 bg-slate-950/40 p-1">
+      <div className="flex flex-wrap gap-1 rounded-lg border border-slate-800/60 bg-slate-950/40 p-1">
         {TABS.map((t) => (
           <button
             key={t.id}
