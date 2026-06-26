@@ -73,7 +73,11 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> List[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        origins = [o.strip().rstrip("/") for o in self.cors_origins.split(",") if o.strip()]
+        frontend = self.frontend_url.strip().rstrip("/") if self.frontend_url else ""
+        if frontend and frontend not in origins:
+            origins.append(frontend)
+        return origins
 
     @property
     def quickbooks_base_url(self) -> str:

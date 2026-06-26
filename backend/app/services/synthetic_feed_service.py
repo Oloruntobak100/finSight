@@ -35,7 +35,7 @@ async def _get_mono_account(user_id: str, account_id: str) -> dict[str, Any]:
         .eq("user_id", user_id)
         .eq("provider", "mono")
         .eq("status", "active")
-        .single()
+        .maybe_single()
         .execute()
     )
     if not res.data:
@@ -63,7 +63,11 @@ async def _upsert_profile_row(user_id: str, account_id: str, patch: dict[str, An
         )
         return res.data[0]
     patch.update({"user_id": user_id, "account_id": account_id})
-    res = await run_db(lambda: sb.table("synthetic_feed_profiles").insert(patch).execute())
+    res = await run_db(
+        lambda: sb.table("synthetic_feed_profiles").insert(patch).select("*").execute()
+    )
+    if not res.data:
+        raise ValueError("Could not create synthetic feed profile")
     return res.data[0]
 
 

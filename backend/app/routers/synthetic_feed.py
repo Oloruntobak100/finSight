@@ -22,8 +22,23 @@ def _require_synthetic_feed() -> None:
     if not settings.synthetic_feed_allowed:
         raise HTTPException(
             status_code=403,
-            detail="Synthetic data feed is not enabled for this environment",
+            detail=(
+                "Synthetic data feed is disabled. Set ENABLE_SYNTHETIC_FEED=true on the backend "
+                "(Railway), or use Mono test_ sandbox keys."
+            ),
         )
+
+
+def _raise_service_error(exc: Exception) -> None:
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    text = str(exc).lower()
+    if "synthetic_feed" in text or "does not exist" in text or "42p01" in text:
+        raise HTTPException(
+            status_code=503,
+            detail="Run Supabase migration 012_synthetic_feed.sql, then redeploy the backend.",
+        ) from exc
+    raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/status", response_model=SyntheticFeedStatusResponse)
@@ -36,8 +51,13 @@ async def feed_status(user_id: CurrentUser) -> SyntheticFeedStatusResponse:
 @router.get("/accounts/{account_id}", response_model=AccountDetailResponse)
 async def account_detail(user_id: CurrentUser, account_id: str) -> AccountDetailResponse:
     _require_synthetic_feed()
-    data = await svc.get_account_detail(user_id, account_id)
-    return AccountDetailResponse(**data)
+    try:
+        data = await svc.get_account_detail(user_id, account_id)
+        return AccountDetailResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_service_error(exc)
 
 
 @router.put("/accounts/{account_id}/profile")

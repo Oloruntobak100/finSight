@@ -83,6 +83,12 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
         408
       );
     }
+    if (err instanceof TypeError && /failed to fetch|networkerror/i.test(err.message)) {
+      throw new ApiError(
+        `Cannot reach the API at ${API_BASE}. Check that the backend is running, CORS allows this site, and the latest code is deployed.`,
+        0
+      );
+    }
     throw err;
   } finally {
     clearTimeout(timer);

@@ -10,6 +10,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ApiError } from "@/lib/api";
 import {
   datePresetMonths,
   fetchAccountDetail,
@@ -75,7 +76,13 @@ export default function DataFeedAccountPage() {
       setFillStart(preset.start);
       setFillEnd(preset.end);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load");
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to load";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -227,16 +234,47 @@ export default function DataFeedAccountPage() {
         </p>
       )}
       {error && (
-        <p className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">
-          {error}
-        </p>
+        <div className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+          <p>{error}</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => void load()}>
+            Retry
+          </Button>
+        </div>
       )}
+
+      <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-400">
+        <p className="font-medium text-slate-300">How this page works</p>
+        <ol className="mt-2 list-inside list-decimal space-y-1">
+          <li>
+            <strong className="text-slate-300">Historical import</strong> — pull real Mono transactions for a date
+            range (baseline data).
+          </li>
+          <li>
+            <strong className="text-slate-300">Persona</strong> — choose who the bank account behaves like (mix,
+            volume, remark rate).
+          </li>
+          <li>
+            <strong className="text-slate-300">Fill history</strong> — optionally generate synthetic past transactions
+            spread across dates.
+          </li>
+          <li>
+            <strong className="text-slate-300">Live feed</strong> — drip new synthetic transactions forward on a
+            schedule.
+          </li>
+          <li>
+            <strong className="text-slate-300">Run log</strong> — audit trail of imports, fills, and drips.
+          </li>
+        </ol>
+      </div>
 
       {/* Historical Mono import */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">1. Historical import (Mono)</CardTitle>
-          <CardDescription>Pull real transactions from Mono for a date range before generating synthetic data</CardDescription>
+          <CardDescription>
+            Pulls real bank transactions from Mono for the date range you pick. This is your baseline — not synthetic.
+            Use this first so FinSight has authentic Mono-shaped rows before generating test data.
+          </CardDescription>
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
           <div className="flex flex-wrap gap-2">
@@ -277,7 +315,10 @@ export default function DataFeedAccountPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">2. Persona</CardTitle>
-          <CardDescription>Controls transaction mix, volume, and how often narrations include user remarks</CardDescription>
+          <CardDescription>
+            Defines what kind of account this simulates: transaction types (transfers, POS, airtime, fees), daily
+            volume, and how often narrations include a user-written remark (most Nigerian transfers have none).
+          </CardDescription>
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
           <div className="flex flex-wrap gap-2">
@@ -348,7 +389,10 @@ export default function DataFeedAccountPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">3. Fill sparse history (optional)</CardTitle>
-          <CardDescription>Generate realistic synthetic transactions spread across a past date range</CardDescription>
+          <CardDescription>
+            Generates Nigeria-realistic synthetic transactions across a past date range — tagged Synthetic in
+            Transactions. Does not delete Mono rows. Use when sandbox Mono history is too thin or repetitive.
+          </CardDescription>
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
           <div className="grid gap-4 sm:grid-cols-3">
@@ -380,10 +424,16 @@ export default function DataFeedAccountPage() {
         <CardHeader>
           <CardTitle className="text-base">4. Live feed</CardTitle>
           <CardDescription>
-            Adds ~{Math.max(1, Math.round(dailyTxTarget / Math.max(1, 24 / liveIntervalHours)))} transactions
-            every {liveIntervalHours}h ({dailyTxTarget}/day target)
+            Adds a small batch of new synthetic transactions on a timer (not a full backfill). Keeps the account
+            feeling active for Books, Reports, and date filters.
           </CardDescription>
         </CardHeader>
+        <div className="flex flex-wrap gap-2 px-6 pb-2">
+          <p className="w-full text-xs text-slate-500">
+            ~{Math.max(1, Math.round(dailyTxTarget / Math.max(1, 24 / liveIntervalHours)))} transactions every{" "}
+            {liveIntervalHours}h ({dailyTxTarget}/day target)
+          </p>
+        </div>
         <div className="flex flex-wrap gap-2 px-6 pb-6">
           {!profile?.live_feed_enabled ? (
             <Button onClick={handleStartLive} loading={busy === "live-start"}>
@@ -409,6 +459,7 @@ export default function DataFeedAccountPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Run log</CardTitle>
+          <CardDescription>History of Mono imports, history fills, and live drips for this bank account.</CardDescription>
         </CardHeader>
         <div className="overflow-x-auto px-6 pb-6">
           <table className="w-full text-sm">
