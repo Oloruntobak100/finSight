@@ -163,6 +163,21 @@ class ExcludeRequest(BaseModel):
     transaction_id: str
 
 
+RevertTarget = Literal["excluded", "needs_review", "unclassified"]
+
+
+class RevertRequest(BaseModel):
+    transaction_id: str
+    target: RevertTarget
+
+
+class RevertResponse(BaseModel):
+    transaction_id: str
+    previous_status: Optional[str] = None
+    target: RevertTarget
+    transaction: Optional[dict[str, Any]] = None
+
+
 class ApproveResponse(BaseModel):
     approved: bool
     transaction_id: str

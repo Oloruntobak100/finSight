@@ -930,6 +930,109 @@ async def exclude_transaction(user_id: str, transaction_id: str) -> dict[str, An
     return res.data[0]
 
 
+RevertTarget = Literal["excluded", "needs_review", "unclassified"]
+
+_REVERT_TARGETS: dict[str, set[str]] = {
+    "needs_review": {"excluded", "unclassified"},
+    "pending": {"needs_review", "excluded", "unclassified"},
+    "auto_approved": {"needs_review", "excluded", "unclassified"},
+    "failed": {"needs_review", "excluded", "unclassified"},
+}
+
+_QB_RESET_FIELDS = {
+    "qb_sync_status": None,
+    "qb_account_id": None,
+    "qb_account_name": None,
+    "qb_payment_account_id": None,
+    "qb_confidence": None,
+    "qb_suggestion_method": None,
+    "qb_confidence_reason": None,
+    "qb_posting_type": None,
+    "qb_entity_id": None,
+    "qb_posted_at": None,
+    "qb_error": None,
+    "posting_intent": None,
+}
+
+
+async def revert_transaction(
+    user_id: str,
+    transaction_id: str,
+    target: RevertTarget,
+) -> dict[str, Any]:
+    sb = get_supabase()
+    txn_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("*")
+        .eq("id", transaction_id)
+        .eq("user_id", user_id)
+        .single()
+        .execute()
+    )
+    txn = txn_res.data
+    if not txn:
+        raise ValueError("Transaction not found")
+
+    current = txn.get("qb_sync_status")
+    if current == "posted":
+        raise ValueError("Posted transactions cannot be moved back")
+    if not current:
+        raise ValueError("Transaction is not in the books queue")
+
+    allowed = _REVERT_TARGETS.get(current, set())
+    if target not in allowed:
+        raise ValueError(f"Cannot move from {current} to {target}")
+
+    if target == "excluded":
+        row = await exclude_transaction(user_id, transaction_id)
+        return {
+            "transaction_id": transaction_id,
+            "previous_status": current,
+            "target": target,
+            "transaction": row,
+        }
+
+    if target == "needs_review":
+        if current == "pending":
+            await reject_suggestion(user_id, transaction_id)
+        else:
+            await run_db(
+                lambda: sb.table("transactions")
+                .update(
+                    {
+                        "qb_sync_status": "needs_review",
+                        "qb_error": None,
+                    }
+                )
+                .eq("id", transaction_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+    else:
+        await run_db(
+            lambda: sb.table("transactions")
+            .update(_QB_RESET_FIELDS)
+            .eq("id", transaction_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+    refreshed = await run_db(
+        lambda: sb.table("transactions")
+        .select("*")
+        .eq("id", transaction_id)
+        .eq("user_id", user_id)
+        .single()
+        .execute()
+    )
+    return {
+        "transaction_id": transaction_id,
+        "previous_status": current,
+        "target": target,
+        "transaction": refreshed.data,
+    }
+
+
 async def set_posting_intent(
     user_id: str,
     transaction_id: str,

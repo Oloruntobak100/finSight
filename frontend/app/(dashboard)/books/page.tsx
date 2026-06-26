@@ -13,7 +13,6 @@ import {
   approveBulk,
   approveTransaction,
   classifyTransactions,
-  excludeTransaction,
   getAutomationSettings,
   getBooksGroups,
   getBooksQueue,
@@ -22,6 +21,7 @@ import {
   listCoa,
   postTransaction,
   postTransactionsBulk,
+  revertTransaction,
   setPostingIntent,
   syncCoa,
   type AutomationSettings,
@@ -30,6 +30,7 @@ import {
   type QbSyncStatus,
   type QueueGroup,
   type QueueItem,
+  type RevertTarget,
 } from "@/lib/books";
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
@@ -416,13 +417,20 @@ function BooksQueueContent() {
     }
   }
 
-  async function handleExclude(id: string) {
+  async function handleRevert(id: string, target: RevertTarget) {
     setActionLoading(id);
+    setError(null);
+    const labels: Record<RevertTarget, string> = {
+      excluded: "Transfers",
+      needs_review: "Review",
+      unclassified: "New",
+    };
     try {
-      await excludeTransaction(id);
+      await revertTransaction(id, target);
+      setInfo(`Moved to ${labels[target]}`);
       await refreshData();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Exclude failed");
+      setError(e instanceof ApiError ? e.message : "Could not move transaction");
     } finally {
       setActionLoading(null);
     }
@@ -788,10 +796,114 @@ function BooksQueueContent() {
                           </Button>
                         </>
                       )}
+                      {status === "pending" && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "needs_review")}
+                          >
+                            Review
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "unclassified")}
+                          >
+                            New
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "excluded")}
+                          >
+                            Transfers
+                          </Button>
+                        </>
+                      )}
+                      {status === "needs_review" && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "excluded")}
+                          >
+                            Transfers
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "unclassified")}
+                          >
+                            New
+                          </Button>
+                        </>
+                      )}
+                      {status === "auto_approved" && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "needs_review")}
+                          >
+                            Review
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "excluded")}
+                          >
+                            Transfers
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "unclassified")}
+                          >
+                            New
+                          </Button>
+                        </>
+                      )}
                       {status === "failed" && (
-                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => handlePost(row.id)}>
-                          Retry
-                        </Button>
+                        <>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => handlePost(row.id)}>
+                            Retry
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "needs_review")}
+                          >
+                            Review
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-1.5 text-xs"
+                            disabled={actionLoading === row.id}
+                            onClick={() => handleRevert(row.id, "unclassified")}
+                          >
+                            New
+                          </Button>
+                        </>
                       )}
                       {status === "excluded" && (
                         <>
@@ -824,11 +936,6 @@ function BooksQueueContent() {
                           onClick={() => refreshData({ classify: true })}
                         >
                           Map
-                        </Button>
-                      )}
-                      {status !== "posted" && status !== "excluded" && status !== "unclassified" && (
-                        <Button size="sm" variant="ghost" className="h-7 px-1.5 text-xs" onClick={() => handleExclude(row.id)}>
-                          Skip
                         </Button>
                       )}
                     </div>

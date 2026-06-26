@@ -10,6 +10,8 @@ export type QbSyncStatus =
   | "auto_approved"
   | "unclassified";
 
+export type RevertTarget = "excluded" | "needs_review" | "unclassified";
+
 export type SuggestionMethod =
   | "rule"
   | "fingerprint"
@@ -250,6 +252,16 @@ export async function excludeTransaction(transactionId: string): Promise<unknown
   return apiFetch("/books/exclude", {
     method: "POST",
     body: JSON.stringify({ transaction_id: transactionId }),
+  });
+}
+
+export async function revertTransaction(
+  transactionId: string,
+  target: RevertTarget
+): Promise<{ transaction_id: string; previous_status?: string; target: RevertTarget }> {
+  return apiFetch("/books/revert", {
+    method: "POST",
+    body: JSON.stringify({ transaction_id: transactionId, target }),
   });
 }
 

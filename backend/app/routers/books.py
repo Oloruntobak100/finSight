@@ -23,6 +23,8 @@ from app.models.books import (
     QueueItemResponse,
     QueueListResponse,
     RejectRequest,
+    RevertRequest,
+    RevertResponse,
 )
 from app.services.books_service import (
     approve_transaction,
@@ -38,6 +40,7 @@ from app.services.books_service import (
     post_transaction as post_txn_service,
     post_transactions_bulk,
     reject_suggestion,
+    revert_transaction,
     set_posting_intent,
     upsert_mapping as upsert_mapping_service,
 )
@@ -217,3 +220,12 @@ async def exclude_txn(user_id: CurrentUser, body: ExcludeRequest) -> dict:
         return {"excluded": True, "transaction": row}
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/revert", response_model=RevertResponse)
+async def revert_txn(user_id: CurrentUser, body: RevertRequest) -> RevertResponse:
+    try:
+        result = await revert_transaction(user_id, body.transaction_id, body.target)
+        return RevertResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
