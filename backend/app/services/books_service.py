@@ -36,6 +36,7 @@ from app.services.transaction_posting_utils import (
     default_fee_account_names,
     detect_posting_kind,
     is_bank_fee,
+    posting_kind_for_coa_account,
     posting_kind_to_intent,
     posting_type_for_kind,
 )
@@ -1083,12 +1084,20 @@ async def approve_transaction(
     coa = await list_coa(user_id)
     coa_ids = _coa_ids(coa)
     if not _account_valid(coa_ids, final_account_id):
-        raise ValueError("Invalid QuickBooks expense account")
+        raise ValueError("Invalid QuickBooks account")
+
+    coa_row = next((r for r in coa if r.get("qb_account_id") == final_account_id), None)
+    if not coa_row:
+        raise ValueError("Invalid QuickBooks account")
 
     suggested_id = txn.get("qb_account_id")
     suggested_name = txn.get("qb_account_name")
     edit_made = bool(suggested_id and suggested_id != final_account_id)
     final_name = _coa_name(coa, final_account_id)
+    approved_kind = posting_kind_for_coa_account(
+        coa_row.get("account_type"),
+        transaction_type=txn.get("transaction_type"),
+    )
 
     if not payment_account_id:
         account_id = txn.get("account_id")
@@ -1101,7 +1110,7 @@ async def approve_transaction(
         txn,
         final_account_id,
         final_name,
-        posting_kind=detect_posting_kind(txn),
+        posting_kind=approved_kind,
     )
 
     decision = await log_posting_decision(
@@ -1139,13 +1148,14 @@ async def approve_transaction(
             final_name,
         )
 
-    approved_kind = detect_posting_kind(txn)
     update = {
         "qb_account_id": final_account_id,
         "qb_account_name": final_name,
         "qb_payment_account_id": payment_account_id,
         "fingerprint_id": fp_row.get("id"),
         "posting_intent": posting_kind_to_intent(approved_kind),
+        "qb_posting_type": posting_type_for_kind(approved_kind),
+        "qb_suggestion_method": "manual",
         "qb_sync_status": "pending",
     }
     await run_db(

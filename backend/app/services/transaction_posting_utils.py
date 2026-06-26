@@ -230,6 +230,22 @@ def detect_posting_kind(
     return "expense"
 
 
+def posting_kind_for_coa_account(
+    account_type: str | None,
+    *,
+    transaction_type: str | None = None,
+) -> PostingKind:
+    """Infer posting kind when the user picks a QuickBooks account directly."""
+    at = (account_type or "").strip().lower()
+    if at == "income":
+        return "income"
+    if at in ("expense", "other expense", "cost of goods sold"):
+        return "expense"
+    if transaction_type == "credit":
+        return "income"
+    return "expense"
+
+
 def posting_type_for_kind(kind: PostingKind) -> PostingType:
     if kind == "income":
         return "deposit"

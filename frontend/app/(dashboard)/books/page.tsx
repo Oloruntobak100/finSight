@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertCircle, BookOpen, RefreshCw } from "lucide-react";
+import { AlertCircle, BookOpen, ChevronDown, RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,6 @@ import {
   postTransaction,
   postTransactionsBulk,
   revertTransaction,
-  setPostingIntent,
   syncCoa,
   type AutomationSettings,
   type BooksReadiness,
@@ -81,8 +80,24 @@ function coaForRow(
   return expenseCoa;
 }
 
+const POSTABLE_ACCOUNT_TYPES = new Set([
+  "Expense",
+  "Income",
+  "Other Expense",
+  "Cost of Goods Sold",
+]);
+
+function buildPostableCoa(accounts: CoaAccount[]): CoaAccount[] {
+  return accounts
+    .filter((a) => a.active && POSTABLE_ACCOUNT_TYPES.has(a.account_type ?? ""))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 const selectClass =
   "h-8 w-full max-w-full rounded-md border border-slate-700 bg-slate-900 px-1.5 text-xs text-white";
+
+const assignSelectClass =
+  "h-7 w-full min-w-0 appearance-none rounded-md border border-slate-700 bg-slate-900 py-1 pl-2 pr-6 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50";
 
 function confidenceBadge(
   confidence: number | null | undefined,
@@ -172,7 +187,9 @@ function BooksQueueContent() {
   const [groups, setGroups] = useState<QueueGroup[]>([]);
   const [expenseCoa, setExpenseCoa] = useState<CoaAccount[]>([]);
   const [incomeCoa, setIncomeCoa] = useState<CoaAccount[]>([]);
+  const [postableCoa, setPostableCoa] = useState<CoaAccount[]>([]);
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
+  const [teachAccountEdits, setTeachAccountEdits] = useState<Record<string, string>>({});
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [coverage, setCoverage] = useState<{ total_bank_transactions: number; classified: number; unclassified: number } | null>(null);
@@ -299,6 +316,7 @@ function BooksQueueContent() {
 
         setExpenseCoa(expense.items);
         setIncomeCoa(income.items);
+        setPostableCoa(buildPostableCoa(coa.items));
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
@@ -436,14 +454,21 @@ function BooksQueueContent() {
     }
   }
 
-  async function handleTeachIntent(id: string, intent: "expense" | "income") {
+  async function handleTeachAccount(id: string, accountId: string) {
+    if (!accountId) return;
     setActionLoading(id);
+    setError(null);
     try {
-      await setPostingIntent(id, intent);
-      setInfo(`Marked as ${intent} — re-classifying`);
-      await refreshData({ classify: true });
+      await approveTransaction(id, accountId, false);
+      setInfo("Account assigned — moved to Pending");
+      setTeachAccountEdits((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      await refreshData();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Intent update failed");
+      setError(e instanceof ApiError ? e.message : "Could not assign account");
     } finally {
       setActionLoading(null);
     }
@@ -909,26 +934,48 @@ function BooksQueueContent() {
                         </>
                       )}
                       {status === "excluded" && (
-                        <>
+                        <div className="flex min-w-0 items-center gap-1">
+                          <div className="relative min-w-0 flex-1">
+                            <select
+                              className={assignSelectClass}
+                              value={teachAccountEdits[row.id] ?? row.qb_account_id ?? ""}
+                              disabled={actionLoading === row.id}
+                              onChange={(e) =>
+                                setTeachAccountEdits((prev) => ({
+                                  ...prev,
+                                  [row.id]: e.target.value,
+                                }))
+                              }
+                            >
+                              <option value="">Assign account…</option>
+                              {postableCoa.map((a) => (
+                                <option key={a.qb_account_id} value={a.qb_account_id}>
+                                  {a.name}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown
+                              className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-500"
+                              aria-hidden
+                            />
+                          </div>
                           <Button
                             size="sm"
-                            variant="outline"
-                            className="h-7 px-2 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleTeachIntent(row.id, "expense")}
+                            className="h-7 shrink-0 px-2 text-xs"
+                            disabled={
+                              actionLoading === row.id ||
+                              !(teachAccountEdits[row.id] ?? row.qb_account_id)
+                            }
+                            onClick={() =>
+                              handleTeachAccount(
+                                row.id,
+                                teachAccountEdits[row.id] ?? row.qb_account_id ?? ""
+                              )
+                            }
                           >
-                            Expense
+                            Map
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 px-2 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleTeachIntent(row.id, "income")}
-                          >
-                            Income
-                          </Button>
-                        </>
+                        </div>
                       )}
                       {status === "unclassified" && (
                         <Button
