@@ -92,25 +92,31 @@ async def _upsert_profile_row(user_id: str, account_id: str, patch: dict[str, An
     )
     patch["updated_at"] = datetime.now(timezone.utc).isoformat()
     if existing_row:
-        res = await run_db(
+        await run_db(
             lambda: sb.table("synthetic_feed_profiles")
             .update(patch)
             .eq("id", existing_row["id"])
-            .select("*")
             .execute()
         )
-        updated = _first_row(res)
-        if not updated:
-            raise ValueError("Could not update synthetic feed profile")
-        return updated
-    patch.update({"user_id": user_id, "account_id": account_id})
-    res = await run_db(
-        lambda: sb.table("synthetic_feed_profiles").insert(patch).select("*").execute()
-    )
-    created = _first_row(res)
-    if not created:
-        raise ValueError("Could not create synthetic feed profile")
-    return created
+        row = await _select_one(
+            sb,
+            "synthetic_feed_profiles",
+            filters=[("eq", "id", existing_row["id"])],
+        )
+    else:
+        patch.update({"user_id": user_id, "account_id": account_id})
+        await run_db(lambda: sb.table("synthetic_feed_profiles").insert(patch).execute())
+        row = await _select_one(
+            sb,
+            "synthetic_feed_profiles",
+            filters=[
+                ("eq", "user_id", user_id),
+                ("eq", "account_id", account_id),
+            ],
+        )
+    if not row:
+        raise ValueError("Could not upsert synthetic feed profile")
+    return row
 
 
 async def get_or_create_profile(user_id: str, account_id: str) -> dict[str, Any]:
@@ -205,9 +211,7 @@ async def _start_run(
         "persona_snapshot": persona_snapshot or {},
         "status": "running",
     }
-    res = await run_db(
-        lambda: sb.table("synthetic_feed_runs").insert(row).select("*").execute()
-    )
+    res = await run_db(lambda: sb.table("synthetic_feed_runs").insert(row).execute())
     created = _first_row(res)
     if not created:
         raise ValueError("Could not start synthetic feed run")
