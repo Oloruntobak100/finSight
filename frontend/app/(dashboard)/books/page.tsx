@@ -41,7 +41,7 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "needs_review", label: "Review" },
   { id: "auto_approved", label: "Auto" },
   { id: "posted", label: "Posted" },
-  { id: "excluded", label: "Transfers" },
+  { id: "excluded", label: "All transactions" },
   { id: "failed", label: "Failed" },
 ];
 
@@ -421,7 +421,7 @@ function BooksQueueContent() {
     setActionLoading(id);
     setError(null);
     const labels: Record<RevertTarget, string> = {
-      excluded: "Transfers",
+      excluded: "All transactions",
       needs_review: "Review",
       unclassified: "New",
     };
@@ -822,8 +822,9 @@ function BooksQueueContent() {
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "excluded")}
+                            title="Move to All transactions"
                           >
-                            Transfers
+                            All
                           </Button>
                         </>
                       )}
@@ -835,8 +836,9 @@ function BooksQueueContent() {
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "excluded")}
+                            title="Move to All transactions"
                           >
-                            Transfers
+                            All
                           </Button>
                           <Button
                             size="sm"
@@ -866,8 +868,9 @@ function BooksQueueContent() {
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "excluded")}
+                            title="Move to All transactions"
                           >
-                            Transfers
+                            All
                           </Button>
                           <Button
                             size="sm"
