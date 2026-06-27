@@ -62,7 +62,9 @@ export default function DataFeedAccountPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const dev = await apiFetch<{ mono_env?: string }>("/banking/dev-info").catch(() => ({}));
+      const dev = await apiFetch<{ mono_env?: string }>("/banking/dev-info").catch(
+        (): { mono_env?: string } => ({})
+      );
       const sandbox = dev.mono_env === "sandbox";
       setIsMonoSandbox(sandbox);
       setShowMonoImport(!sandbox);
