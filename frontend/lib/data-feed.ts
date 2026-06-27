@@ -139,6 +139,14 @@ export function resetSynthetic(accountId: string) {
   );
 }
 
+/** Remove all non-synthetic rows across every connected account (Mono dummy cleanup). */
+export function cleanupKeepSyntheticOnlyUser() {
+  return apiFetch<ArchiveResult>("/transactions/cleanup/keep-synthetic-only", {
+    method: "POST",
+    timeoutMs: DATA_FEED_TIMEOUT_MS,
+  });
+}
+
 export function datePresetMonths(months: number): { start: string; end: string } {
   const end = new Date();
   const start = new Date();

@@ -4,8 +4,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from app.auth.dependencies import CurrentUser
+from app.config import settings
 from app.database import get_supabase, run_db
 from app.models.transaction import CategoryUpdateRequest, TransactionDetails, TransactionListResponse, TransactionResponse
+from app.services import synthetic_feed_service as synthetic_feed_svc
 from app.services.transaction_enrichment import extract_transaction_details, reprocess_stored_transactions
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -43,15 +45,24 @@ async def transaction_meta(user_id: CurrentUser) -> dict:
         .is_("archived_at", "null")
         .execute()
     )
+    counts = {
+        "total": total_res.count or 0,
+        "synthetic": synthetic_res.count or 0,
+        "non_synthetic": (total_res.count or 0) - (synthetic_res.count or 0),
+    }
     return {
         "categories": categories,
         "accounts": accounts_res.data or [],
-        "counts": {
-            "total": total_res.count or 0,
-            "synthetic": synthetic_res.count or 0,
-            "non_synthetic": (total_res.count or 0) - (synthetic_res.count or 0),
-        },
+        "counts": counts,
+        "cleanup_available": settings.synthetic_feed_allowed and counts["non_synthetic"] > 0,
     }
+
+
+@router.post("/cleanup/keep-synthetic-only")
+async def cleanup_keep_synthetic(user_id: CurrentUser) -> dict:
+    if not settings.synthetic_feed_allowed:
+        raise HTTPException(status_code=403, detail="Cleanup is only available in Mono sandbox / synthetic feed mode.")
+    return await synthetic_feed_svc.keep_synthetic_only_user(user_id)
 
 
 @router.get("", response_model=TransactionListResponse)

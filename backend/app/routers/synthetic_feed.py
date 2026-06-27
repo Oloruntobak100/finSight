@@ -41,6 +41,18 @@ def _raise_service_error(exc: Exception) -> None:
     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/cleanup/keep-synthetic-only")
+async def cleanup_keep_synthetic_user(user_id: CurrentUser) -> dict:
+    _require_synthetic_feed()
+    return await svc.keep_synthetic_only_user(user_id)
+
+
+@router.post("/cleanup/remove-mono-imports")
+async def cleanup_remove_mono_user(user_id: CurrentUser) -> dict:
+    _require_synthetic_feed()
+    return await svc.purge_mono_imports_user(user_id)
+
+
 @router.get("/status", response_model=SyntheticFeedStatusResponse)
 async def feed_status(user_id: CurrentUser) -> SyntheticFeedStatusResponse:
     _require_synthetic_feed()

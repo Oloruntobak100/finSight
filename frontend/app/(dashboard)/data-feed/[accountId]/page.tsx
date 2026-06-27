@@ -16,7 +16,7 @@ import {
   fetchAccountDetail,
   fillHistory,
   importMonoHistory,
-  keepSyntheticOnly,
+  cleanupKeepSyntheticOnlyUser,
   pauseLiveFeed,
   purgeMonoDummies,
   resetSynthetic,
@@ -232,7 +232,7 @@ export default function DataFeedAccountPage() {
   async function handleKeepSyntheticOnly() {
     if (
       !window.confirm(
-        "Remove ALL non-synthetic transactions for this account? Only Synthetic rows will remain."
+        "Remove ALL non-synthetic transactions across every bank account? This removes Samuel Olamide and other Mono import dummy rows. Synthetic rows are kept."
       )
     ) {
       return;
@@ -240,9 +240,9 @@ export default function DataFeedAccountPage() {
     setBusy("keep-synthetic");
     setError(null);
     try {
-      const res = await keepSyntheticOnly(accountId);
+      const res = await cleanupKeepSyntheticOnlyUser();
       setMessage(
-        `Removed ${res.archived} non-synthetic row(s). ${res.remaining_synthetic} synthetic remain — should match Transactions → Source: Synthetic.`
+        `Removed ${res.archived} bank import row(s). ${res.remaining_synthetic} synthetic remain — check Transactions (Source → Synthetic).`
       );
       await load();
     } catch (err) {
@@ -379,7 +379,7 @@ export default function DataFeedAccountPage() {
               loading={busy === "keep-synthetic"}
               loadingLabel="Cleaning…"
             >
-              Keep synthetic only
+              Keep synthetic only (all accounts)
             </Button>
             <Button
               variant="outline"

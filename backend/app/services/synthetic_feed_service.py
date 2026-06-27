@@ -508,7 +508,7 @@ async def _fetch_transaction_ids(
     sb: Any,
     *,
     user_id: str,
-    account_id: str,
+    account_id: str | None = None,
     is_synthetic: bool | None = None,
     source_provider: str | None = None,
     name_markers: tuple[str, ...] | None = None,
@@ -523,9 +523,10 @@ async def _fetch_transaction_ids(
                 sb.table("transactions")
                 .select("id")
                 .eq("user_id", user_id)
-                .eq("account_id", account_id)
                 .is_("archived_at", "null")
             )
+            if account_id is not None:
+                q = q.eq("account_id", account_id)
             if is_synthetic is not None:
                 q = q.eq("is_synthetic", is_synthetic)
             if source_provider:
@@ -563,6 +564,73 @@ async def _archive_transaction_ids(sb: Any, ids: list[str]) -> int:
         )
         archived += len(chunk)
     return archived
+
+
+async def user_transaction_stats(user_id: str) -> dict[str, int]:
+    sb = get_supabase()
+    total_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .is_("archived_at", "null")
+        .execute()
+    )
+    syn_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("is_synthetic", True)
+        .is_("archived_at", "null")
+        .execute()
+    )
+    mono_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("source_provider", "mono")
+        .eq("is_synthetic", False)
+        .is_("archived_at", "null")
+        .execute()
+    )
+    total = total_res.count or 0
+    synthetic = syn_res.count or 0
+    return {
+        "total": total,
+        "synthetic": synthetic,
+        "mono_imported": mono_res.count or 0,
+        "non_synthetic": total - synthetic,
+    }
+
+
+async def keep_synthetic_only_user(user_id: str) -> dict[str, Any]:
+    """Archive every non-synthetic transaction across all accounts (Mono dummy cleanup)."""
+    sb = get_supabase()
+    ids = await _fetch_transaction_ids(sb, user_id=user_id, is_synthetic=False)
+    archived = await _archive_transaction_ids(sb, ids)
+    stats = await user_transaction_stats(user_id)
+    return {
+        "archived": archived,
+        "remaining_total": stats["total"],
+        "remaining_synthetic": stats["synthetic"],
+    }
+
+
+async def purge_mono_imports_user(user_id: str) -> dict[str, Any]:
+    """Archive all non-synthetic Mono imports across all accounts."""
+    sb = get_supabase()
+    ids = await _fetch_transaction_ids(
+        sb,
+        user_id=user_id,
+        is_synthetic=False,
+        source_provider="mono",
+    )
+    archived = await _archive_transaction_ids(sb, ids)
+    stats = await user_transaction_stats(user_id)
+    return {
+        "archived": archived,
+        "remaining_total": stats["total"],
+        "remaining_synthetic": stats["synthetic"],
+    }
 
 
 async def transaction_stats(user_id: str, account_id: str) -> dict[str, int]:
