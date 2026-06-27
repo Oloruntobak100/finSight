@@ -50,6 +50,13 @@ export interface AccountDetail {
   profile: SyntheticFeedProfile;
   runs: SyntheticFeedRun[];
   presets: Record<string, Record<string, unknown>>;
+  stats?: { total: number; synthetic: number; mono_imported: number; non_synthetic: number };
+}
+
+export interface ArchiveResult {
+  archived: number;
+  remaining_total: number;
+  remaining_synthetic: number;
 }
 
 export interface GenerateResult {
@@ -112,8 +119,22 @@ export function runLiveDripNow(accountId: string) {
 }
 
 export function purgeMonoDummies(accountId: string) {
-  return apiFetch<{ archived: number; markers: string[] }>(
+  return apiFetch<ArchiveResult>(
     `/synthetic-feed/accounts/${accountId}/purge-mono-dummies`,
+    { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
+  );
+}
+
+export function keepSyntheticOnly(accountId: string) {
+  return apiFetch<ArchiveResult>(
+    `/synthetic-feed/accounts/${accountId}/keep-synthetic-only`,
+    { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
+  );
+}
+
+export function resetSynthetic(accountId: string) {
+  return apiFetch<ArchiveResult>(
+    `/synthetic-feed/accounts/${accountId}/reset-synthetic`,
     { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
 }

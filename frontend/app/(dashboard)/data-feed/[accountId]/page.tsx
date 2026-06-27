@@ -16,8 +16,10 @@ import {
   fetchAccountDetail,
   fillHistory,
   importMonoHistory,
+  keepSyntheticOnly,
   pauseLiveFeed,
   purgeMonoDummies,
+  resetSynthetic,
   PERSONA_LABELS,
   runLiveDripNow,
   saveProfile,
@@ -40,6 +42,7 @@ export default function DataFeedAccountPage() {
   const [profile, setProfile] = useState<SyntheticFeedProfile | null>(null);
   const [runs, setRuns] = useState<SyntheticFeedRun[]>([]);
   const [presets, setPresets] = useState<Record<string, Record<string, unknown>>>({});
+  const [stats, setStats] = useState<{ total: number; synthetic: number; mono_imported: number; non_synthetic: number } | null>(null);
 
   const [personaType, setPersonaType] = useState<PersonaType>("individual");
   const [dailyTxMin, setDailyTxMin] = useState(8);
@@ -74,6 +77,7 @@ export default function DataFeedAccountPage() {
       setProfile(data.profile);
       setRuns(data.runs);
       setPresets(data.presets);
+      setStats(data.stats ?? null);
       const p = data.profile;
       setPersonaType(p.persona_type as PersonaType);
       setDailyTxMin(p.daily_tx_min ?? Math.max(1, p.daily_tx_target - 7));
@@ -205,7 +209,7 @@ export default function DataFeedAccountPage() {
   async function handlePurgeMonoDummies() {
     if (
       !window.confirm(
-        "Remove Mono sandbox dummy rows (e.g. Samuel Olamide)? Synthetic transactions are kept. This cannot be undone from the UI."
+        "Remove all Mono import rows for this account? Synthetic transactions are kept."
       )
     ) {
       return;
@@ -214,9 +218,56 @@ export default function DataFeedAccountPage() {
     setError(null);
     try {
       const res = await purgeMonoDummies(accountId);
-      setMessage(`Removed ${res.archived} Mono sandbox dummy transaction(s). Check Transactions — total should drop.`);
+      setMessage(
+        `Removed ${res.archived} Mono import row(s). ${res.remaining_synthetic} synthetic remain (${res.remaining_total} total).`
+      );
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Purge failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleKeepSyntheticOnly() {
+    if (
+      !window.confirm(
+        "Remove ALL non-synthetic transactions for this account? Only Synthetic rows will remain."
+      )
+    ) {
+      return;
+    }
+    setBusy("keep-synthetic");
+    setError(null);
+    try {
+      const res = await keepSyntheticOnly(accountId);
+      setMessage(
+        `Removed ${res.archived} non-synthetic row(s). ${res.remaining_synthetic} synthetic remain — should match Transactions → Source: Synthetic.`
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cleanup failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleResetSynthetic() {
+    if (
+      !window.confirm(
+        "Remove all synthetic transactions for this account? Use this before a fresh Fill history if you ran fill multiple times."
+      )
+    ) {
+      return;
+    }
+    setBusy("reset-synthetic");
+    setError(null);
+    try {
+      const res = await resetSynthetic(accountId);
+      setMessage(`Removed ${res.archived} synthetic row(s). Run Fill history again for a clean dataset.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reset failed");
     } finally {
       setBusy(null);
     }
@@ -310,19 +361,45 @@ export default function DataFeedAccountPage() {
       {isMonoSandbox && (
         <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
           <p>
-            Mono sandbox import is <strong>disabled automatically</strong> on connect and sync (no more Samuel
-            Olamide floods). Use <strong>Fill history</strong> after saving a persona.
+            Mono sandbox import is <strong>disabled automatically</strong> on connect and sync. Use{" "}
+            <strong>Fill history</strong> after saving a persona.
           </p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-3 border-red-900/50 text-red-300 hover:bg-red-950/30"
-            onClick={handlePurgeMonoDummies}
-            loading={busy === "purge"}
-            loadingLabel="Removing…"
-          >
-            Remove Samuel Olamide / Mono dummy rows
-          </Button>
+          {stats && (
+            <p className="mt-2 text-xs text-amber-200/70">
+              This account: <strong>{stats.total}</strong> total · <strong>{stats.synthetic}</strong> synthetic ·{" "}
+              <strong>{stats.mono_imported}</strong> Mono imports · <strong>{stats.non_synthetic}</strong> non-synthetic
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-red-900/50 text-red-300 hover:bg-red-950/30"
+              onClick={handleKeepSyntheticOnly}
+              loading={busy === "keep-synthetic"}
+              loadingLabel="Cleaning…"
+            >
+              Keep synthetic only
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePurgeMonoDummies}
+              loading={busy === "purge"}
+              loadingLabel="Removing…"
+            >
+              Remove Mono imports
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleResetSynthetic}
+              loading={busy === "reset-synthetic"}
+              loadingLabel="Resetting…"
+            >
+              Reset synthetic (re-fill)
+            </Button>
+          </div>
         </div>
       )}
 

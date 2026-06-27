@@ -504,29 +504,158 @@ async def run_live_drip_now(user_id: str, account_id: str) -> dict[str, Any]:
 MONO_SANDBOX_DUMMY_MARKERS = ("Samuel Olamide",)
 
 
-async def purge_mono_sandbox_dummies(user_id: str, account_id: str) -> dict[str, Any]:
-    """Soft-delete repetitive Mono sandbox rows (not synthetic feed data)."""
-    await _get_mono_account(user_id, account_id)
-    sb = get_supabase()
-    now_iso = datetime.now(timezone.utc).isoformat()
-    or_filters = ",".join(
-        f"merchant_name.ilike.%{marker}%,description.ilike.%{marker}%"
-        for marker in MONO_SANDBOX_DUMMY_MARKERS
-    )
+async def _fetch_transaction_ids(
+    sb: Any,
+    *,
+    user_id: str,
+    account_id: str,
+    is_synthetic: bool | None = None,
+    source_provider: str | None = None,
+    name_markers: tuple[str, ...] | None = None,
+) -> list[str]:
+    """Collect IDs to archive (Supabase update alone does not return row counts reliably)."""
+    ids: list[str] = []
+    page_size = 500
+    offset = 0
+    while True:
+        def _page(off: int = offset) -> Any:
+            q = (
+                sb.table("transactions")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("account_id", account_id)
+                .is_("archived_at", "null")
+            )
+            if is_synthetic is not None:
+                q = q.eq("is_synthetic", is_synthetic)
+            if source_provider:
+                q = q.eq("source_provider", source_provider)
+            if name_markers:
+                or_filters = ",".join(
+                    f"merchant_name.ilike.%{marker}%,description.ilike.%{marker}%"
+                    for marker in name_markers
+                )
+                q = q.or_(or_filters)
+            return q.range(off, off + page_size - 1).execute()
 
-    res = await run_db(
+        batch = _rows(await run_db(_page))
+        if not batch:
+            break
+        ids.extend(row["id"] for row in batch if row.get("id"))
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return ids
+
+
+async def _archive_transaction_ids(sb: Any, ids: list[str]) -> int:
+    if not ids:
+        return 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    archived = 0
+    for offset in range(0, len(ids), 50):
+        chunk = ids[offset : offset + 50]
+        await run_db(
+            lambda c=chunk: sb.table("transactions")
+            .update({"archived_at": now_iso})
+            .in_("id", c)
+            .execute()
+        )
+        archived += len(chunk)
+    return archived
+
+
+async def transaction_stats(user_id: str, account_id: str) -> dict[str, int]:
+    sb = get_supabase()
+
+    def _count(**filters: Any) -> Any:
+        q = (
+            sb.table("transactions")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("account_id", account_id)
+            .is_("archived_at", "null")
+        )
+        for key, val in filters.items():
+            q = q.eq(key, val)
+        return q.execute()
+
+    total_res = await run_db(lambda: _count())
+    syn_res = await run_db(lambda: _count(is_synthetic=True))
+    mono_res = await run_db(
         lambda: sb.table("transactions")
-        .update({"archived_at": now_iso})
+        .select("id", count="exact")
         .eq("user_id", user_id)
         .eq("account_id", account_id)
         .eq("source_provider", "mono")
         .eq("is_synthetic", False)
         .is_("archived_at", "null")
-        .or_(or_filters)
         .execute()
     )
-    archived = len(_rows(res))
-    return {"archived": archived, "markers": list(MONO_SANDBOX_DUMMY_MARKERS)}
+    return {
+        "total": total_res.count or 0,
+        "synthetic": syn_res.count or 0,
+        "mono_imported": mono_res.count or 0,
+        "non_synthetic": (total_res.count or 0) - (syn_res.count or 0),
+    }
+
+
+async def purge_mono_sandbox_dummies(user_id: str, account_id: str) -> dict[str, Any]:
+    """Soft-delete all non-synthetic Mono rows for this account (sandbox cleanup)."""
+    await _get_mono_account(user_id, account_id)
+    sb = get_supabase()
+    ids = await _fetch_transaction_ids(
+        sb,
+        user_id=user_id,
+        account_id=account_id,
+        is_synthetic=False,
+        source_provider="mono",
+    )
+    archived = await _archive_transaction_ids(sb, ids)
+    stats = await transaction_stats(user_id, account_id)
+    return {
+        "archived": archived,
+        "remaining_total": stats["total"],
+        "remaining_synthetic": stats["synthetic"],
+    }
+
+
+async def keep_synthetic_only(user_id: str, account_id: str) -> dict[str, Any]:
+    """Archive every non-synthetic transaction for this account."""
+    await _get_mono_account(user_id, account_id)
+    sb = get_supabase()
+    ids = await _fetch_transaction_ids(
+        sb,
+        user_id=user_id,
+        account_id=account_id,
+        is_synthetic=False,
+    )
+    archived = await _archive_transaction_ids(sb, ids)
+    stats = await transaction_stats(user_id, account_id)
+    return {
+        "archived": archived,
+        "remaining_total": stats["total"],
+        "remaining_synthetic": stats["synthetic"],
+    }
+
+
+async def reset_synthetic_transactions(user_id: str, account_id: str) -> dict[str, Any]:
+    """Archive all synthetic rows so Fill history can start clean (avoids duplicate stacks)."""
+    await _get_mono_account(user_id, account_id)
+    sb = get_supabase()
+    ids = await _fetch_transaction_ids(
+        sb,
+        user_id=user_id,
+        account_id=account_id,
+        is_synthetic=True,
+    )
+    archived = await _archive_transaction_ids(sb, ids)
+    stats = await transaction_stats(user_id, account_id)
+    return {
+        "archived": archived,
+        "remaining_total": stats["total"],
+        "remaining_synthetic": stats["synthetic"],
+    }
 
 
 async def list_status(user_id: str) -> dict[str, Any]:
@@ -575,7 +704,7 @@ async def get_account_detail(user_id: str, account_id: str) -> dict[str, Any]:
         .limit(20)
         .execute()
     )
-    return {"profile": profile, "runs": runs_res.data or [], "presets": PERSONA_PRESETS}
+    return {"profile": profile, "runs": runs_res.data or [], "presets": PERSONA_PRESETS, "stats": await transaction_stats(user_id, account_id)}
 
 
 async def list_runs(user_id: str, account_id: str, page: int = 1, limit: int = 20) -> dict[str, Any]:

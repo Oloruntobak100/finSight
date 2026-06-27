@@ -112,6 +112,9 @@ function TransactionsPageContent() {
   const [dateTo, setDateTo] = useState("");
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [syntheticFilter, setSyntheticFilter] = useState("");
+  const [globalCounts, setGlobalCounts] = useState<{ total: number; synthetic: number; non_synthetic: number } | null>(
+    null
+  );
 
   const accountMap = Object.fromEntries(accounts.map((a) => [a.id, a.account_name]));
   const activeColumns = TRANSACTION_COLUMNS.filter((col) => visibleColumns[col.id]);
@@ -183,9 +186,14 @@ function TransactionsPageContent() {
   useEffect(() => {
     void (async () => {
       try {
-        const metaRes = await apiFetch<{ categories: string[]; accounts: Account[] }>("/transactions/meta");
+        const metaRes = await apiFetch<{
+          categories: string[];
+          accounts: Account[];
+          counts?: { total: number; synthetic: number; non_synthetic: number };
+        }>("/transactions/meta");
         setAccounts(metaRes.accounts ?? []);
         setCategories(metaRes.categories ?? []);
+        if (metaRes.counts) setGlobalCounts(metaRes.counts);
       } catch {
         try {
           const [accountsRes, categoriesRes] = await Promise.all([
@@ -504,6 +512,12 @@ function TransactionsPageContent() {
             </Button>
           </div>
         </div>
+        {!loading && globalCounts && !accountId && !syntheticFilter && !search && !category && (
+          <p className="mb-4 text-xs text-slate-500">
+            {globalCounts.synthetic} synthetic · {globalCounts.non_synthetic} from bank imports — use Source → Synthetic
+            to see generated data only
+          </p>
+        )}
         <div className="overflow-hidden">
           <table className="table-fit text-sm">
             <thead>

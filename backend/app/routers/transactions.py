@@ -28,9 +28,29 @@ async def transaction_meta(user_id: CurrentUser) -> dict:
     categories = sorted(
         {row["category"] for row in (txns_res.data or []) if row.get("category")}
     )
+    total_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .is_("archived_at", "null")
+        .execute()
+    )
+    synthetic_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("is_synthetic", True)
+        .is_("archived_at", "null")
+        .execute()
+    )
     return {
         "categories": categories,
         "accounts": accounts_res.data or [],
+        "counts": {
+            "total": total_res.count or 0,
+            "synthetic": synthetic_res.count or 0,
+            "non_synthetic": (total_res.count or 0) - (synthetic_res.count or 0),
+        },
     }
 
 

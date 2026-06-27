@@ -143,6 +143,24 @@ async def purge_mono_dummies(user_id: CurrentUser, account_id: str) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/accounts/{account_id}/keep-synthetic-only")
+async def keep_synthetic_only(user_id: CurrentUser, account_id: str) -> dict:
+    _require_synthetic_feed()
+    try:
+        return await svc.keep_synthetic_only(user_id, account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/reset-synthetic")
+async def reset_synthetic(user_id: CurrentUser, account_id: str) -> dict:
+    _require_synthetic_feed()
+    try:
+        return await svc.reset_synthetic_transactions(user_id, account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/accounts/{account_id}/runs")
 async def list_runs(
     user_id: CurrentUser,

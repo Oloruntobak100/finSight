@@ -61,3 +61,4 @@ class AccountDetailResponse(BaseModel):
     profile: dict[str, Any]
     runs: list[dict[str, Any]]
     presets: dict[str, Any]
+    stats: dict[str, Any] = {}
