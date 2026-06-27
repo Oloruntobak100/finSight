@@ -63,7 +63,8 @@ CLASSIFY_MAX_ROWS = 5000
 
 
 def _apply_books_account_filter(query: Any, active_bank_ids: set[str]) -> Any:
-    """Include active bank rows and orphaned rows pending re-link after reconnect."""
+    """Active, non-archived bank rows plus orphaned rows pending re-link after reconnect."""
+    query = query.is_("archived_at", "null")
     if not active_bank_ids:
         return query
     id_list = ",".join(str(i) for i in active_bank_ids)
@@ -592,6 +593,8 @@ async def _classify_transactions_batch(
     classified = 0
 
     for txn in txns:
+        if txn.get("archived_at"):
+            continue
         if txn.get("account_id") and txn.get("account_id") not in active_bank_ids:
             continue
         if txn.get("qb_sync_status") == "posted":
