@@ -134,6 +134,15 @@ async def live_feed_run_now(user_id: CurrentUser, account_id: str) -> GenerateRe
     return GenerateResponse(**result)
 
 
+@router.post("/accounts/{account_id}/purge-mono-dummies")
+async def purge_mono_dummies(user_id: CurrentUser, account_id: str) -> dict:
+    _require_synthetic_feed()
+    try:
+        return await svc.purge_mono_sandbox_dummies(user_id, account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/accounts/{account_id}/runs")
 async def list_runs(
     user_id: CurrentUser,

@@ -17,6 +17,7 @@ import {
   fillHistory,
   importMonoHistory,
   pauseLiveFeed,
+  purgeMonoDummies,
   PERSONA_LABELS,
   runLiveDripNow,
   saveProfile,
@@ -201,6 +202,26 @@ export default function DataFeedAccountPage() {
     }
   }
 
+  async function handlePurgeMonoDummies() {
+    if (
+      !window.confirm(
+        "Remove Mono sandbox dummy rows (e.g. Samuel Olamide)? Synthetic transactions are kept. This cannot be undone from the UI."
+      )
+    ) {
+      return;
+    }
+    setBusy("purge");
+    setError(null);
+    try {
+      const res = await purgeMonoDummies(accountId);
+      setMessage(`Removed ${res.archived} Mono sandbox dummy transaction(s). Check Transactions — total should drop.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Purge failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handlePauseLive() {
     setBusy("live-pause");
     try {
@@ -288,8 +309,20 @@ export default function DataFeedAccountPage() {
 
       {isMonoSandbox && (
         <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
-          Mono sandbox history is usually thin and repetitive (same names, clustered dates). Skip Mono import — use{" "}
-          <strong>Fill history</strong> after saving a persona.
+          <p>
+            Mono sandbox history is usually thin and repetitive (same names, clustered dates). Skip Mono import — use{" "}
+            <strong>Fill history</strong> after saving a persona.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-3 border-red-900/50 text-red-300 hover:bg-red-950/30"
+            onClick={handlePurgeMonoDummies}
+            loading={busy === "purge"}
+            loadingLabel="Removing…"
+          >
+            Remove Samuel Olamide / Mono dummy rows
+          </Button>
         </div>
       )}
 

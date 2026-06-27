@@ -103,6 +103,13 @@ export function runLiveDripNow(accountId: string) {
   );
 }
 
+export function purgeMonoDummies(accountId: string) {
+  return apiFetch<{ archived: number; markers: string[] }>(
+    `/synthetic-feed/accounts/${accountId}/purge-mono-dummies`,
+    { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
+  );
+}
+
 export function datePresetMonths(months: number): { start: string; end: string } {
   const end = new Date();
   const start = new Date();

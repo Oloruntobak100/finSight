@@ -501,6 +501,34 @@ async def run_live_drip_now(user_id: str, account_id: str) -> dict[str, Any]:
     return await run_live_drip(profile)
 
 
+MONO_SANDBOX_DUMMY_MARKERS = ("Samuel Olamide",)
+
+
+async def purge_mono_sandbox_dummies(user_id: str, account_id: str) -> dict[str, Any]:
+    """Soft-delete repetitive Mono sandbox rows (not synthetic feed data)."""
+    await _get_mono_account(user_id, account_id)
+    sb = get_supabase()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    or_filters = ",".join(
+        f"merchant_name.ilike.%{marker}%,description.ilike.%{marker}%"
+        for marker in MONO_SANDBOX_DUMMY_MARKERS
+    )
+
+    res = await run_db(
+        lambda: sb.table("transactions")
+        .update({"archived_at": now_iso})
+        .eq("user_id", user_id)
+        .eq("account_id", account_id)
+        .eq("source_provider", "mono")
+        .eq("is_synthetic", False)
+        .is_("archived_at", "null")
+        .or_(or_filters)
+        .execute()
+    )
+    archived = len(_rows(res))
+    return {"archived": archived, "markers": list(MONO_SANDBOX_DUMMY_MARKERS)}
+
+
 async def list_status(user_id: str) -> dict[str, Any]:
     sb = get_supabase()
     accounts_res = await run_db(
