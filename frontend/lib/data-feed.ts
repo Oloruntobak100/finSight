@@ -52,6 +52,14 @@ export interface AccountDetail {
   presets: Record<string, Record<string, unknown>>;
 }
 
+export interface GenerateResult {
+  created: number;
+  classified: number;
+  classify_pending?: boolean;
+  run_id: string;
+  next_live_run_at?: string;
+}
+
 export function fetchFeedStatus() {
   return apiFetch<SyntheticFeedStatus>("/synthetic-feed/status");
 }
@@ -76,7 +84,7 @@ export function importMonoHistory(accountId: string, start: string, end: string)
 }
 
 export function fillHistory(accountId: string, start: string, end: string, count?: number) {
-  return apiFetch<{ created: number; classified: number; run_id: string }>(
+  return apiFetch<GenerateResult>(
     `/synthetic-feed/accounts/${accountId}/fill-history`,
     { method: "POST", body: JSON.stringify({ start, end, count }), timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
@@ -97,7 +105,7 @@ export function pauseLiveFeed(accountId: string) {
 }
 
 export function runLiveDripNow(accountId: string) {
-  return apiFetch<{ created: number; classified: number; run_id: string; next_live_run_at?: string }>(
+  return apiFetch<GenerateResult>(
     `/synthetic-feed/accounts/${accountId}/live-feed/run-now`,
     { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
