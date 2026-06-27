@@ -115,21 +115,26 @@ export default function DataFeedAccountPage() {
     }
   }
 
+  async function persistProfile() {
+    const res = await saveProfile(accountId, {
+      persona_type: personaType,
+      persona_config: { remark_rate: remarkRate },
+      daily_tx_min: dailyTxMin,
+      daily_tx_max: dailyTxMax,
+      live_interval_hours: liveIntervalHours,
+      auto_classify: autoClassify,
+      historical_start: histStart || undefined,
+      historical_end: histEnd || undefined,
+    });
+    setProfile(res.profile);
+    return res.profile;
+  }
+
   async function handleSaveProfile() {
     setBusy("save");
     setError(null);
     try {
-      const res = await saveProfile(accountId, {
-        persona_type: personaType,
-        persona_config: { remark_rate: remarkRate },
-        daily_tx_min: dailyTxMin,
-        daily_tx_max: dailyTxMax,
-        live_interval_hours: liveIntervalHours,
-        auto_classify: autoClassify,
-        historical_start: histStart || undefined,
-        historical_end: histEnd || undefined,
-      });
-      setProfile(res.profile);
+      await persistProfile();
       setMessage("Persona saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -163,11 +168,14 @@ export default function DataFeedAccountPage() {
     }
     setBusy("fill");
     setError(null);
+    setMessage(null);
     try {
-      await handleSaveProfile();
+      await persistProfile();
       const count = fillCount ? parseInt(fillCount, 10) : undefined;
       const res = await fillHistory(accountId, fillStart, fillEnd, count);
-      setMessage(`Generated ${res.created} synthetic transaction(s). Classified ${res.classified}.`);
+      setMessage(
+        `Generated ${res.created} synthetic transaction(s). Classified ${res.classified}. Open Transactions and filter by Synthetic to view them.`
+      );
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Fill failed");
@@ -178,8 +186,9 @@ export default function DataFeedAccountPage() {
 
   async function handleStartLive() {
     setBusy("live-start");
+    setError(null);
     try {
-      await handleSaveProfile();
+      await persistProfile();
       const res = await startLiveFeed(accountId);
       setProfile(res.profile);
       setMessage("Live feed started.");
@@ -395,9 +404,17 @@ export default function DataFeedAccountPage() {
               />
             </div>
           </div>
-          <Button onClick={handleFillHistory} loading={busy === "fill"} loadingLabel="Generating…">
+          <Button
+            onClick={handleFillHistory}
+            loading={busy === "fill"}
+            loadingLabel="Generating history…"
+          >
             Fill history
           </Button>
+          <p className="text-xs text-slate-500">
+            Saves your persona, then generates transactions on the server. Large ranges can take up to a minute — keep
+            this page open until you see a success message.
+          </p>
         </div>
       </Card>
 

@@ -253,6 +253,7 @@ async def _insert_synthetic_transactions(
     sb = get_supabase()
     user_rules = await load_user_category_rules(user_id, sb)
     created_ids: list[str] = []
+    rows: list[dict[str, Any]] = []
 
     for raw in payloads:
         amount = float(raw.get("amount", 0)) / 100
@@ -271,15 +272,19 @@ async def _insert_synthetic_transactions(
         if not row.get("transaction_date"):
             row["transaction_date"] = str(date.today())
         row["is_synthetic"] = True
+        rows.append(row)
 
+    batch_size = 50
+    for offset in range(0, len(rows), batch_size):
+        chunk = rows[offset : offset + batch_size]
         res = await run_db(
-            lambda r=row: sb.table("transactions")
-            .upsert(r, on_conflict="source_provider,external_id,user_id")
+            lambda c=chunk: sb.table("transactions")
+            .upsert(c, on_conflict="source_provider,external_id,user_id")
             .execute()
         )
-        inserted = _first_row(res)
-        if inserted and inserted.get("id"):
-            created_ids.append(inserted["id"])
+        for inserted in _rows(res):
+            if inserted.get("id"):
+                created_ids.append(inserted["id"])
 
     return created_ids
 
