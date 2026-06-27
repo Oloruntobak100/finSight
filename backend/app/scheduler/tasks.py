@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+from app.config import settings
 from app.database import get_supabase, run_db
 from app.services.analytics_service import calculate_metrics
 from app.services.books_service import auto_post_approved_transactions
@@ -22,6 +23,8 @@ async def nightly_sync_all() -> None:
             if account["provider"] == "plaid":
                 await plaid_service.sync_plaid_transactions(account["user_id"], account["id"])
             elif account["provider"] == "mono":
+                if settings.skip_mono_sandbox_sync:
+                    continue
                 await mono_service.sync_mono_transactions(account["user_id"], account["id"])
         except Exception:
             continue

@@ -76,6 +76,7 @@ async def sync_accounts(
 
     total = 0
     recurring = 0
+    mono_sandbox_skipped = 0
     errors: list[dict[str, str]] = []
     for account in accounts_res.data or []:
         try:
@@ -83,6 +84,9 @@ async def sync_accounts(
                 total += await plaid_service.sync_plaid_transactions(user_id, account["id"])
                 recurring += await plaid_service.mark_recurring_transactions(user_id, account["id"])
             elif account["provider"] == "mono":
+                if settings.skip_mono_sandbox_sync:
+                    mono_sandbox_skipped += 1
+                    continue
                 total += await mono_service.sync_mono_transactions(user_id, account["id"])
         except Exception as exc:
             errors.append({"account_id": account["id"], "error": str(exc)})
@@ -93,6 +97,7 @@ async def sync_accounts(
         "synced_transactions": total,
         "recurring_marked": recurring,
         "reprocessed_transactions": reprocessed,
+        "mono_sandbox_sync_skipped": mono_sandbox_skipped,
         "errors": errors,
         "status": "partial" if errors else "ok",
     }

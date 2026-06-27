@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     def synthetic_feed_allowed(self) -> bool:
         return self.enable_synthetic_feed or self.mono_env == "sandbox"
 
+    @property
+    def skip_mono_sandbox_sync(self) -> bool:
+        """Skip pulling Mono sandbox transactions — use synthetic feed instead."""
+        return self.mono_env == "sandbox" and self.synthetic_feed_allowed
+
 
 @lru_cache
 def get_settings() -> Settings:

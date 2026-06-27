@@ -310,8 +310,8 @@ export default function DataFeedAccountPage() {
       {isMonoSandbox && (
         <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
           <p>
-            Mono sandbox history is usually thin and repetitive (same names, clustered dates). Skip Mono import — use{" "}
-            <strong>Fill history</strong> after saving a persona.
+            Mono sandbox import is <strong>disabled automatically</strong> on connect and sync (no more Samuel
+            Olamide floods). Use <strong>Fill history</strong> after saving a persona.
           </p>
           <Button
             variant="outline"

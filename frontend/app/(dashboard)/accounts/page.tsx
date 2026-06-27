@@ -164,22 +164,27 @@ function AccountsPageContent() {
       setError(null);
 
       try {
-        try {
-          const syncPath = accountId
-            ? `/banking/sync?account_id=${encodeURIComponent(accountId)}`
-            : "/banking/sync";
-          await apiFetch(syncPath, { method: "POST", timeoutMs: BANKING_TIMEOUT_MS });
-        } catch {
-          // Account is connected even if first sync fails — user can hit Sync All
+        const skipMonoSync = provider === "mono" && isMonoSandbox;
+        if (!skipMonoSync) {
+          try {
+            const syncPath = accountId
+              ? `/banking/sync?account_id=${encodeURIComponent(accountId)}`
+              : "/banking/sync";
+            await apiFetch(syncPath, { method: "POST", timeoutMs: BANKING_TIMEOUT_MS });
+          } catch {
+            // Account is connected even if first sync fails — user can hit Sync All
+          }
         }
 
         setConnectionFlow({ provider, phase: "finishing", institutionHint });
         await loadAccounts({ quiet: true });
 
         setSyncMessage(
-          provider === "mono"
-            ? "African bank connected successfully."
-            : "Bank connected successfully."
+          provider === "mono" && isMonoSandbox
+            ? "Bank connected. Mono sandbox import is skipped automatically — use Data Feed → Fill history for test data."
+            : provider === "mono"
+              ? "African bank connected successfully."
+              : "Bank connected successfully."
         );
       } finally {
         setConnectionFlow(null);
@@ -188,7 +193,7 @@ function AccountsPageContent() {
         setConnectingMono(false);
       }
     },
-    [loadAccounts]
+    [loadAccounts, isMonoSandbox]
   );
 
   const { open, ready } = usePlaidLink({
@@ -293,6 +298,7 @@ function AccountsPageContent() {
       const result = await apiFetch<{
         synced_transactions: number;
         recurring_marked: number;
+        mono_sandbox_sync_skipped?: number;
         errors?: { account_id: string; error: string }[];
         status?: string;
       }>("/banking/sync", { method: "POST", timeoutMs: BANKING_TIMEOUT_MS });
@@ -302,7 +308,15 @@ function AccountsPageContent() {
           `Synced ${result.synced_transactions} transactions with ${result.errors.length} account warning(s).`
         );
       } else if (!options?.quiet) {
-        setSyncMessage(`Synced ${result.synced_transactions} new transaction(s).`);
+        if (result.mono_sandbox_sync_skipped) {
+          setSyncMessage(
+            result.synced_transactions > 0
+              ? `Synced ${result.synced_transactions} transaction(s). Mono sandbox import skipped — use Data Feed → Fill history.`
+              : "Mono sandbox import skipped — use Data Feed → Fill history for test data."
+          );
+        } else {
+          setSyncMessage(`Synced ${result.synced_transactions} new transaction(s).`);
+        }
       }
     } catch {
       setError("Sync failed. Please try again.");
