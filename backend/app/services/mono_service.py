@@ -323,11 +323,12 @@ async def _fetch_enriched_mono_transactions(
     mono_account_id: str,
     start: str | None = None,
     end: str | None = None,
+    *,
+    skip_enrichment: bool = False,
 ) -> list[dict[str, Any]]:
     transactions = await _fetch_mono_transaction_pages(client, mono_account_id, start=start, end=end)
 
-    if not transactions:
-
+    if not transactions or skip_enrichment:
         return transactions
 
 
@@ -477,6 +478,9 @@ async def sync_mono_transactions(
     account_id: str,
     start: str | None = None,
     end: str | None = None,
+    *,
+    skip_enrichment: bool = False,
+    data_wait_attempts: int = 8,
 ) -> int:
     sb = get_supabase()
     account_res = await run_db(
@@ -489,7 +493,7 @@ async def sync_mono_transactions(
     )
     mono_account_id = account_res.data["external_account_id"]
 
-    if not await _wait_for_transaction_data(mono_account_id):
+    if not await _wait_for_transaction_data(mono_account_id, attempts=data_wait_attempts):
         raise ValueError(
             "Mono account data is not ready yet. Wait a moment and try Sync All again."
         )
@@ -500,7 +504,7 @@ async def sync_mono_transactions(
     user_rules = await load_user_category_rules(user_id, sb)
     async with httpx.AsyncClient() as client:
         transactions = await _fetch_enriched_mono_transactions(
-            client, mono_account_id, start=mono_start, end=mono_end
+            client, mono_account_id, start=mono_start, end=mono_end, skip_enrichment=skip_enrichment
         )
         count = await _upsert_mono_transactions(sb, user_id, account_id, transactions, user_rules)
 

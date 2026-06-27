@@ -295,7 +295,14 @@ async def import_mono_history(
     profile = await get_or_create_profile(user_id, account_id)
     run = await _start_run(profile, "mono_import", {"start": start, "end": end})
     try:
-        imported = await sync_mono_transactions(user_id, account_id, start=start, end=end)
+        imported = await sync_mono_transactions(
+            user_id,
+            account_id,
+            start=start,
+            end=end,
+            skip_enrichment=True,
+            data_wait_attempts=3,
+        )
         await _upsert_profile_row(
             user_id,
             account_id,

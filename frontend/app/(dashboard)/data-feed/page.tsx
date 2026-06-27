@@ -68,7 +68,7 @@ export default function DataFeedPage() {
           <Badge className="border-amber-500/30 bg-amber-950/40 text-amber-300">Testing</Badge>
         </div>
         <p className="mt-1 text-slate-400">
-          Import Mono history, configure a persona, and stream realistic synthetic transactions.
+          Configure a persona and generate realistic synthetic transactions. Mono sandbox import is optional.
         </p>
       </div>
 

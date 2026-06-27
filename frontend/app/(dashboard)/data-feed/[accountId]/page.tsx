@@ -10,7 +10,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import {
   datePresetMonths,
   fetchAccountDetail,
@@ -52,6 +52,8 @@ export default function DataFeedAccountPage() {
   const [fillStart, setFillStart] = useState("");
   const [fillEnd, setFillEnd] = useState("");
   const [fillCount, setFillCount] = useState("");
+  const [isMonoSandbox, setIsMonoSandbox] = useState(true);
+  const [showMonoImport, setShowMonoImport] = useState(false);
 
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +62,11 @@ export default function DataFeedAccountPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const dev = await apiFetch<{ mono_env?: string }>("/banking/dev-info").catch(() => ({}));
+      const sandbox = dev.mono_env === "sandbox";
+      setIsMonoSandbox(sandbox);
+      setShowMonoImport(!sandbox);
+
       const data = await fetchAccountDetail(accountId);
       setProfile(data.profile);
       setRuns(data.runs);
@@ -247,81 +254,39 @@ export default function DataFeedAccountPage() {
       )}
 
       <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-400">
-        <p className="font-medium text-slate-300">How this page works</p>
+        <p className="font-medium text-slate-300">Recommended workflow (Mono sandbox)</p>
         <ol className="mt-2 list-inside list-decimal space-y-1">
           <li>
-            <strong className="text-slate-300">Historical import</strong> — pull real Mono transactions for a date
-            range (baseline data).
+            <strong className="text-slate-300">Persona</strong> — pick account type, daily volume range, remark rate.
           </li>
           <li>
-            <strong className="text-slate-300">Persona</strong> — choose who the bank account behaves like (mix,
-            volume, remark rate).
+            <strong className="text-slate-300">Fill history</strong> — generate realistic synthetic transactions spread
+            across past dates (main data source in sandbox).
           </li>
           <li>
-            <strong className="text-slate-300">Fill history</strong> — optionally generate synthetic past transactions
-            spread across dates.
+            <strong className="text-slate-300">Live feed</strong> — drip new synthetic transactions going forward.
           </li>
           <li>
-            <strong className="text-slate-300">Live feed</strong> — drip new synthetic transactions forward on a
-            schedule.
-          </li>
-          <li>
-            <strong className="text-slate-300">Run log</strong> — audit trail of imports, fills, and drips.
+            <strong className="text-slate-300">Mono import (optional)</strong> — only if you want whatever Mono returns;
+            often the same rows regardless of date range.
           </li>
         </ol>
       </div>
 
-      {/* Historical Mono import */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">1. Historical import (Mono)</CardTitle>
-          <CardDescription>
-            Pulls real bank transactions from Mono for the date range you pick. This is your baseline — not synthetic.
-            Use this first so FinSight has authentic Mono-shaped rows before generating test data.
-          </CardDescription>
-        </CardHeader>
-        <div className="space-y-4 px-6 pb-6">
-          <div className="flex flex-wrap gap-2">
-            {[3, 6, 12].map((m) => {
-              const p = datePresetMonths(m);
-              return (
-                <Button
-                  key={m}
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setHistStart(p.start);
-                    setHistEnd(p.end);
-                  }}
-                >
-                  Last {m} months
-                </Button>
-              );
-            })}
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-xs text-slate-400">Start</label>
-              <DateInput value={histStart} onChange={(e) => setHistStart(e.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs text-slate-400">End</label>
-              <DateInput value={histEnd} onChange={(e) => setHistEnd(e.target.value)} />
-            </div>
-          </div>
-          <Button onClick={handleImportMono} loading={busy === "import"} loadingLabel="Importing…">
-            Import from Mono
-          </Button>
+      {isMonoSandbox && (
+        <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
+          Mono sandbox history is usually thin and repetitive (same names, clustered dates). Skip Mono import — use{" "}
+          <strong>Fill history</strong> after saving a persona.
         </div>
-      </Card>
+      )}
 
       {/* Persona */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">2. Persona</CardTitle>
+          <CardTitle className="text-base">1. Persona</CardTitle>
           <CardDescription>
-            Defines what kind of account this simulates: transaction types (transfers, POS, airtime, fees), daily
-            volume, and how often narrations include a user-written remark (most Nigerian transfers have none).
+            Start here. Defines transaction types (transfers, POS, airtime, fees), daily volume range, and how often
+            narrations include a user remark (most Nigerian transfers have none).
           </CardDescription>
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
@@ -402,10 +367,11 @@ export default function DataFeedAccountPage() {
       {/* Fill history */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">3. Fill sparse history (optional)</CardTitle>
+          <CardTitle className="text-base">2. Fill history</CardTitle>
           <CardDescription>
             Generates Nigeria-realistic synthetic transactions across a past date range — tagged Synthetic in
-            Transactions. Does not delete Mono rows. Use when sandbox Mono history is too thin or repetitive.
+            Transactions. Spread across dates so Reports and filters behave realistically. Recommended as your first data
+            step in Mono sandbox.
           </CardDescription>
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
@@ -436,7 +402,7 @@ export default function DataFeedAccountPage() {
       {/* Live feed */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">4. Live feed</CardTitle>
+          <CardTitle className="text-base">3. Live feed</CardTitle>
           <CardDescription>
             Adds a small batch of new synthetic transactions on a timer (not a full backfill). Keeps the account
             feeling active for Books, Reports, and date filters.
@@ -467,6 +433,57 @@ export default function DataFeedAccountPage() {
             </span>
           )}
         </div>
+      </Card>
+
+      {/* Optional Mono import */}
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle className="text-base">Optional: Mono historical import</CardTitle>
+            <CardDescription>
+              Pulls whatever Mono has for a date range. In sandbox this is often the same few transactions (or none)
+              regardless of 3, 6, or 12 months — skip unless you specifically need real Mono-shaped rows mixed in.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setShowMonoImport((v) => !v)}>
+            {showMonoImport ? "Hide" : "Show"}
+          </Button>
+        </CardHeader>
+        {showMonoImport && (
+          <div className="space-y-4 px-6 pb-6">
+            <div className="flex flex-wrap gap-2">
+              {[3, 6, 12].map((m) => {
+                const p = datePresetMonths(m);
+                return (
+                  <Button
+                    key={m}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setHistStart(p.start);
+                      setHistEnd(p.end);
+                    }}
+                  >
+                    Last {m} months
+                  </Button>
+                );
+              })}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-xs text-slate-400">Start</label>
+                <DateInput value={histStart} onChange={(e) => setHistStart(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs text-slate-400">End</label>
+                <DateInput value={histEnd} onChange={(e) => setHistEnd(e.target.value)} />
+              </div>
+            </div>
+            <Button onClick={handleImportMono} loading={busy === "import"} loadingLabel="Importing…">
+              Import from Mono
+            </Button>
+          </div>
+        )}
       </Card>
 
       {/* Run log */}

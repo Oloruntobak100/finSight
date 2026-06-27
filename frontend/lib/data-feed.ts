@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api";
+import { apiFetch, DATA_FEED_TIMEOUT_MS } from "@/lib/api";
 
 export type PersonaType = "individual" | "freelancer" | "small_business" | "retail";
 
@@ -64,27 +64,28 @@ export function saveProfile(accountId: string, body: Record<string, unknown>) {
   return apiFetch<{ profile: SyntheticFeedProfile }>(`/synthetic-feed/accounts/${accountId}/profile`, {
     method: "PUT",
     body: JSON.stringify(body),
+    timeoutMs: DATA_FEED_TIMEOUT_MS,
   });
 }
 
 export function importMonoHistory(accountId: string, start: string, end: string) {
   return apiFetch<{ imported: number; start: string; end: string; run_id: string }>(
     `/synthetic-feed/accounts/${accountId}/import-mono`,
-    { method: "POST", body: JSON.stringify({ start, end }) }
+    { method: "POST", body: JSON.stringify({ start, end }), timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
 }
 
 export function fillHistory(accountId: string, start: string, end: string, count?: number) {
   return apiFetch<{ created: number; classified: number; run_id: string }>(
     `/synthetic-feed/accounts/${accountId}/fill-history`,
-    { method: "POST", body: JSON.stringify({ start, end, count }) }
+    { method: "POST", body: JSON.stringify({ start, end, count }), timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
 }
 
 export function startLiveFeed(accountId: string) {
   return apiFetch<{ profile: SyntheticFeedProfile }>(
     `/synthetic-feed/accounts/${accountId}/live-feed/start`,
-    { method: "POST" }
+    { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
 }
 
@@ -98,7 +99,7 @@ export function pauseLiveFeed(accountId: string) {
 export function runLiveDripNow(accountId: string) {
   return apiFetch<{ created: number; classified: number; run_id: string; next_live_run_at?: string }>(
     `/synthetic-feed/accounts/${accountId}/live-feed/run-now`,
-    { method: "POST" }
+    { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
   );
 }
 
