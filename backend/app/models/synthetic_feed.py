@@ -47,6 +47,7 @@ class ImportMonoResponse(BaseModel):
 class GenerateResponse(BaseModel):
     created: int
     classified: int = 0
+    classify_pending: bool = False
     run_id: str
     next_live_run_at: Optional[str] = None
 

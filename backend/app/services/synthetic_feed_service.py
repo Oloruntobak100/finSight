@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -22,6 +23,20 @@ from app.services.synthetic_narration_templates import (
 from app.services.transaction_enrichment import build_mono_transaction_row, load_user_category_rules
 
 logger = logging.getLogger(__name__)
+
+
+async def _classify_created_transactions(user_id: str, created_ids: list[str]) -> None:
+    try:
+        await classify_user_transactions(user_id, created_ids)
+    except Exception:
+        logger.exception("Background classify failed for %d synthetic transactions", len(created_ids))
+
+
+def _schedule_classify(user_id: str, created_ids: list[str]) -> bool:
+    if not created_ids:
+        return False
+    asyncio.create_task(_classify_created_transactions(user_id, created_ids))
+    return True
 
 
 def _rows(res: Any) -> list[dict[str, Any]]:
@@ -372,14 +387,14 @@ async def fill_sparse_history(
         )
         await _finish_run(run["id"], status="completed", transactions_created=len(created_ids))
 
-        classified = 0
+        classify_pending = False
         if profile.get("auto_classify", True) and created_ids:
-            result = await classify_user_transactions(user_id, created_ids)
-            classified = result.get("classified", 0)
+            classify_pending = _schedule_classify(user_id, created_ids)
 
         return {
             "created": len(created_ids),
-            "classified": classified,
+            "classified": 0,
+            "classify_pending": classify_pending,
             "run_id": run["id"],
         }
     except Exception as exc:
@@ -435,14 +450,14 @@ async def run_live_drip(profile: dict[str, Any]) -> dict[str, Any]:
         )
         await _finish_run(run["id"], status="completed", transactions_created=len(created_ids))
 
-        classified = 0
+        classify_pending = False
         if profile.get("auto_classify", True) and created_ids:
-            result = await classify_user_transactions(user_id, created_ids)
-            classified = result.get("classified", 0)
+            classify_pending = _schedule_classify(user_id, created_ids)
 
         return {
             "created": len(created_ids),
-            "classified": classified,
+            "classified": 0,
+            "classify_pending": classify_pending,
             "next_live_run_at": next_run.isoformat(),
             "run_id": run["id"],
         }

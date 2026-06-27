@@ -174,7 +174,9 @@ export default function DataFeedAccountPage() {
       const count = fillCount ? parseInt(fillCount, 10) : undefined;
       const res = await fillHistory(accountId, fillStart, fillEnd, count);
       setMessage(
-        `Generated ${res.created} synthetic transaction(s). Classified ${res.classified}. Open Transactions and filter by Synthetic to view them.`
+        res.classify_pending
+          ? `Generated ${res.created} synthetic transaction(s). Auto-classify is running in the background — check Books in a minute. Open Transactions and filter by Synthetic.`
+          : `Generated ${res.created} synthetic transaction(s). Open Transactions and filter by Synthetic to view them.`
       );
       await load();
     } catch (err) {
