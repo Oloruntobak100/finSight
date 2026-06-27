@@ -34,13 +34,15 @@ import {
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
+const EXCLUDED_TAB_LABEL = "Non-P&L";
+
 const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "unclassified", label: "New" },
   { id: "pending", label: "Pending" },
   { id: "needs_review", label: "Review" },
   { id: "auto_approved", label: "Auto" },
   { id: "posted", label: "Posted" },
-  { id: "excluded", label: "All transactions" },
+  { id: "excluded", label: EXCLUDED_TAB_LABEL },
   { id: "failed", label: "Failed" },
 ];
 
@@ -484,7 +486,7 @@ function BooksQueueContent() {
     setActionLoading(id);
     setError(null);
     const labels: Record<RevertTarget, string> = {
-      excluded: "All transactions",
+      excluded: EXCLUDED_TAB_LABEL,
       needs_review: "Review",
       unclassified: "New",
     };
@@ -663,6 +665,14 @@ function BooksQueueContent() {
           {view === "grouped" ? "List" : "Grouped"}
         </Link>
       </div>
+
+      {status === "excluded" && (
+        <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2 text-sm text-slate-300">
+          Transfers, deposits, loans, and reversals — not posted as income or expense. Use{" "}
+          <span className="font-medium text-white">Map</span> to post to another QuickBooks account if
+          needed.
+        </div>
+      )}
 
       {classifying && (
         <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-3 py-2 text-sm text-blue-200">
@@ -901,9 +911,9 @@ function BooksQueueContent() {
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "excluded")}
-                            title="Move to All transactions"
+                            title={`Mark as ${EXCLUDED_TAB_LABEL}`}
                           >
-                            All
+                            {EXCLUDED_TAB_LABEL}
                           </Button>
                         </>
                       )}
@@ -915,9 +925,9 @@ function BooksQueueContent() {
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "excluded")}
-                            title="Move to All transactions"
+                            title={`Mark as ${EXCLUDED_TAB_LABEL}`}
                           >
-                            All
+                            {EXCLUDED_TAB_LABEL}
                           </Button>
                           <Button
                             size="sm"
@@ -947,9 +957,9 @@ function BooksQueueContent() {
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "excluded")}
-                            title="Move to All transactions"
+                            title={`Mark as ${EXCLUDED_TAB_LABEL}`}
                           >
-                            All
+                            {EXCLUDED_TAB_LABEL}
                           </Button>
                           <Button
                             size="sm"
@@ -997,7 +1007,7 @@ function BooksQueueContent() {
                           }
                           title={
                             isTeachAccountConfirmed(row.id, teachAccountEdits)
-                              ? "Assign to QuickBooks and move to Pending"
+                              ? "Post to QuickBooks (non-P&L account) and move to Pending"
                               : "Choose a QuickBooks account first"
                           }
                           onClick={() => handleTeachAccount(row.id, teachAccountEdits[row.id]!)}
