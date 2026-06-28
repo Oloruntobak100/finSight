@@ -10,7 +10,7 @@ export type QbSyncStatus =
   | "auto_approved"
   | "unclassified";
 
-export type RevertTarget = "excluded" | "needs_review" | "unclassified";
+export type RevertTarget = "needs_review" | "unclassified";
 
 export type SuggestionMethod =
   | "rule"

@@ -15,7 +15,7 @@ def _coa(*rows: tuple[str, str, str]) -> list[dict]:
     ]
 
 
-def test_transfer_excluded():
+def test_transfer_goes_to_review_queue():
     txn = {
         "account_id": "bank-1",
         "category": "Transfer Out",
@@ -33,9 +33,9 @@ def test_transfer_excluded():
     ]
     coa = _coa(("35", "Checking", "Bank"))
     result = classify_transaction(txn, mappings, {}, coa, _coa_ids("35"))
-    assert result["qb_sync_status"] == "excluded"
+    assert result["qb_sync_status"] == "needs_review"
     assert result["qb_posting_type"] == "transfer"
-    assert result["qb_confidence"] is None
+    assert result["qb_suggestion_method"] == "auto_detect"
 
 
 def test_transfer_expense_intent_not_excluded():
@@ -274,7 +274,7 @@ def test_auto_approve_when_opted_in():
     assert result["qb_suggestion_method"] == "fingerprint"
 
 
-def test_balance_sheet_excluded():
+def test_balance_sheet_goes_to_review_queue():
     txn = {
         "account_id": "bank-1",
         "category": "Loan Repayment",
@@ -282,8 +282,9 @@ def test_balance_sheet_excluded():
         "amount": 50000,
     }
     result = classify_transaction(txn, [], {}, _coa(), _coa_ids())
-    assert result["qb_sync_status"] == "excluded"
-    assert "not P&L" in (result["qb_confidence_reason"] or "")
+    assert result["qb_sync_status"] == "needs_review"
+    assert result["qb_suggestion_method"] == "auto_detect"
+    assert "map to" in (result["qb_confidence_reason"] or "").lower()
 
 
 def test_refund_uses_expense_coa_path():

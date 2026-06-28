@@ -126,8 +126,7 @@ async def test_get_summary_aggregates_exact_counts():
 
     assert result["coverage"]["total_bank_transactions"] == 1003
     assert result["counts"]["unclassified"] == 700
-    assert result["counts"]["needs_review"] == 166
-    assert result["counts"]["excluded"] == 137
+    assert result["counts"]["needs_review"] == 303
 
 
 @pytest.mark.asyncio

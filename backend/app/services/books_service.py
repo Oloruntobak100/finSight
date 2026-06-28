@@ -72,10 +72,11 @@ SUMMARY_STATUSES = (
     "needs_review",
     "auto_approved",
     "posted",
-    "excluded",
-    "failed",
     "skipped",
 )
+
+# Counted internally and rolled into needs_review for the Books UI.
+_LEGACY_REVIEW_STATUSES = ("excluded", "failed")
 
 
 def _apply_books_account_filter(query: Any, active_bank_ids: set[str]) -> Any:
@@ -116,13 +117,13 @@ def _auto_detect_reason(txn: dict[str, Any], kind: PostingKind) -> str:
     bank_suffix = f" via {bank}" if bank else ""
 
     if kind == "balance_sheet":
-        label = category or "Balance sheet movement"
-        return f"{direction} — {label}{bank_suffix} (not P&L; teach as expense/income if misclassified)"
+        label = category or "Cash or loan movement"
+        return f"{direction} — {label}{bank_suffix}; map to the QuickBooks account that fits"
     if kind == "reversal":
-        return f"Reversal — {category or 'bank reversal'} (net against original, not posted separately)"
+        return f"Reversal — {category or 'bank reversal'}; match to the original category"
     return (
-        f"{direction} — {channel_label}{bank_suffix} "
-        f"(not P&L; teach as expense/income if misclassified)"
+        f"{direction} — {channel_label}{bank_suffix}; "
+        f"map to income or expense to train the system"
     )
 
 
@@ -422,45 +423,6 @@ def classify_transaction(
     kind = detect_posting_kind(txn, learned_kind=learned_kind)
     posting_type = posting_type_for_kind(kind)
 
-    base_skip = {
-        "qb_posting_type": posting_type,
-        "qb_account_id": None,
-        "qb_account_name": None,
-        "qb_payment_account_id": None,
-        "qb_suggestion_method": None,
-        "qb_confidence_reason": None,
-    }
-
-    if kind == "transfer":
-        return {
-            **base_skip,
-            "qb_sync_status": "excluded",
-            "qb_posting_type": "transfer",
-            "qb_confidence": None,
-            "qb_suggestion_method": "auto_detect",
-            "qb_confidence_reason": _auto_detect_reason(txn, kind),
-        }
-
-    if kind == "reversal":
-        return {
-            **base_skip,
-            "qb_sync_status": "excluded",
-            "qb_posting_type": "skip",
-            "qb_confidence": None,
-            "qb_suggestion_method": "auto_detect",
-            "qb_confidence_reason": _auto_detect_reason(txn, kind),
-        }
-
-    if kind == "balance_sheet":
-        return {
-            **base_skip,
-            "qb_sync_status": "excluded",
-            "qb_posting_type": "skip",
-            "qb_confidence": None,
-            "qb_suggestion_method": "auto_detect",
-            "qb_confidence_reason": _auto_detect_reason(txn, kind),
-        }
-
     bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
     payment_account_id = bank_map.get("qb_account_id") if bank_map else None
 
@@ -543,6 +505,14 @@ def classify_transaction(
     elif kind == "refund" and not reason:
         reason = "Vendor refund — map to the original expense category"
 
+    if kind in ("transfer", "reversal", "balance_sheet"):
+        if not reason:
+            reason = _auto_detect_reason(txn, kind)
+        if not method:
+            method = "auto_detect"
+        if not qb_account_id:
+            confidence = min(confidence, 0.55)
+
     if qb_account_id and not payment_account_id:
         confidence = min(confidence, 0.84)
 
@@ -603,22 +573,20 @@ async def _fetch_unclassified_batch(
     return res.data or []
 
 
-async def _fetch_misclassified_transfer_batch(
+async def _fetch_legacy_queue_batch(
     user_id: str,
     active_bank_ids: set[str],
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Excluded auto-detected transfers that may need reclassification after rule changes."""
+    """Legacy excluded/failed rows to reclassify into the training queue."""
     sb = get_supabase()
     query = (
         sb.table("transactions")
         .select("*")
         .eq("user_id", user_id)
         .in_("source_provider", list(BANK_PROVIDERS))
-        .eq("qb_sync_status", "excluded")
-        .eq("qb_suggestion_method", "auto_detect")
-        .eq("qb_posting_type", "transfer")
+        .in_("qb_sync_status", list(_LEGACY_REVIEW_STATUSES))
     )
     query = _apply_books_account_filter(query, active_bank_ids)
     res = await run_db(lambda: query.limit(limit).execute())
@@ -668,37 +636,21 @@ async def _classify_transactions_batch(
                     learned_kind = stored_kind  # type: ignore[assignment]
 
         kind = detect_posting_kind(txn, learned_kind=learned_kind)
-        if kind in ("transfer", "reversal", "balance_sheet"):
-            update = classify_transaction(
-                txn,
-                mappings,
-                user_rules,
-                coa,
-                coa_ids,
-                learned_kind=learned_kind,
-                automation=automation,
-            )
-            if (
-                allow_reclassify
-                and txn.get("qb_sync_status") == update.get("qb_sync_status") == "excluded"
-                and txn.get("qb_posting_type") == update.get("qb_posting_type")
-            ):
-                continue
-            await run_db(
-                lambda t=txn["id"], u=update: sb.table("transactions")
-                .update(u)
-                .eq("id", t)
-                .eq("user_id", user_id)
-                .execute()
-            )
-            classified += 1
-            continue
 
         rag_result = None
         llm_result = None
         has_rule = bool(_mapping_lookup(mappings, "category", txn.get("category") or ""))
-        target_accounts = _accounts_for_kind(coa, kind)
-        posting_label = "income" if kind == "income" else "expense"
+        if kind in ("transfer", "reversal", "balance_sheet"):
+            target_accounts = [
+                a
+                for a in coa
+                if a.get("account_type")
+                in ("Income", "Expense", "Other Expense", "Cost of Goods Sold")
+            ]
+            posting_label = "income" if txn.get("transaction_type") == "credit" else "expense"
+        else:
+            target_accounts = _accounts_for_kind(coa, kind)
+            posting_label = "income" if kind == "income" else "expense"
 
         if kind == "fee" and _default_fee_account(coa):
             has_rule = True
@@ -735,6 +687,8 @@ async def _classify_transactions_batch(
             new_cat = _refreshed_category(txn, user_rules)
             if new_cat:
                 update["category"] = new_cat
+            if txn.get("qb_sync_status") in _LEGACY_REVIEW_STATUSES:
+                update["qb_error"] = None
         await run_db(
             lambda t=txn["id"], u=update: sb.table("transactions")
             .update(u)
@@ -808,7 +762,7 @@ async def classify_user_transactions(
                 break
 
         while total_classified < CLASSIFY_MAX_ROWS:
-            txns = await _fetch_misclassified_transfer_batch(
+            txns = await _fetch_legacy_queue_batch(
                 user_id, active_bank_ids, limit=CLASSIFY_BATCH_SIZE
             )
             if not txns:
@@ -855,7 +809,12 @@ async def get_queue(
         query = query.is_("qb_sync_status", "null")
     else:
         query = query.not_.is_("qb_sync_status", "null")
-        if status:
+        if status == "needs_review":
+            query = query.in_(
+                "qb_sync_status",
+                ["needs_review", *_LEGACY_REVIEW_STATUSES],
+            )
+        elif status:
             query = query.eq("qb_sync_status", status)
 
     offset = (page - 1) * limit
@@ -959,7 +918,7 @@ async def get_summary(user_id: str) -> dict[str, Any]:
             count_scoped_transactions(user_id, active_bank_ids, unclassified=True),
             *[
                 count_scoped_transactions(user_id, active_bank_ids, qb_sync_status=st)
-                for st in SUMMARY_STATUSES
+                for st in (*SUMMARY_STATUSES, *_LEGACY_REVIEW_STATUSES)
             ],
         ]
         results = await asyncio.gather(*count_tasks)
@@ -967,9 +926,18 @@ async def get_summary(user_id: str) -> dict[str, Any]:
         counts["unclassified"] = unclassified
         coverage["unclassified"] = unclassified
 
-        for st, n in zip(SUMMARY_STATUSES, results[1:], strict=True):
+        all_statuses = (*SUMMARY_STATUSES, *_LEGACY_REVIEW_STATUSES)
+        for st, n in zip(all_statuses, results[1:], strict=True):
             if n:
                 counts[st] = n
+
+        review = (
+            counts.pop("needs_review", 0)
+            + counts.pop("excluded", 0)
+            + counts.pop("failed", 0)
+        )
+        if review:
+            counts["needs_review"] = review
 
         coverage["total_bank_transactions"] = sum(counts.values())
         coverage["classified"] = coverage["total_bank_transactions"] - unclassified
@@ -993,13 +961,14 @@ async def exclude_transaction(user_id: str, transaction_id: str) -> dict[str, An
     return res.data[0]
 
 
-RevertTarget = Literal["excluded", "needs_review", "unclassified"]
+RevertTarget = Literal["needs_review", "unclassified"]
 
 _REVERT_TARGETS: dict[str, set[str]] = {
-    "needs_review": {"excluded", "unclassified"},
-    "pending": {"needs_review", "excluded", "unclassified"},
-    "auto_approved": {"needs_review", "excluded", "unclassified"},
-    "failed": {"needs_review", "excluded", "unclassified"},
+    "needs_review": {"unclassified"},
+    "pending": {"needs_review", "unclassified"},
+    "auto_approved": {"needs_review", "unclassified"},
+    "failed": {"needs_review", "unclassified"},
+    "excluded": {"needs_review", "unclassified"},
 }
 
 _QB_RESET_FIELDS = {
@@ -1045,15 +1014,6 @@ async def revert_transaction(
     allowed = _REVERT_TARGETS.get(current, set())
     if target not in allowed:
         raise ValueError(f"Cannot move from {current} to {target}")
-
-    if target == "excluded":
-        row = await exclude_transaction(user_id, transaction_id)
-        return {
-            "transaction_id": transaction_id,
-            "previous_status": current,
-            "target": target,
-            "transaction": row,
-        }
 
     if target == "needs_review":
         if current == "pending":
@@ -1382,9 +1342,6 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     if txn.get("qb_sync_status") == "posted" and txn.get("qb_entity_id"):
         return {"skipped": True, "reason": "already_posted", "transaction": txn}
 
-    if txn.get("qb_sync_status") in ("excluded",) and not is_auto:
-        return {"skipped": True, "reason": txn.get("qb_sync_status"), "transaction": txn}
-
     if not txn.get("qb_account_id") or not txn.get("qb_payment_account_id"):
         await classify_user_transactions(user_id, [transaction_id])
         txn_res = await run_db(
@@ -1454,7 +1411,13 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     err = last_error or "Post failed"
     await run_db(
         lambda: sb.table("transactions")
-        .update({"qb_sync_status": "failed", "qb_error": err[:2000]})
+        .update(
+            {
+                "qb_sync_status": "needs_review",
+                "qb_error": err[:2000],
+                "qb_confidence_reason": f"Post failed: {err[:500]}",
+            }
+        )
         .eq("id", transaction_id)
         .eq("user_id", user_id)
         .execute()

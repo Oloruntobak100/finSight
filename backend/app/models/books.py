@@ -163,7 +163,7 @@ class ExcludeRequest(BaseModel):
     transaction_id: str
 
 
-RevertTarget = Literal["excluded", "needs_review", "unclassified"]
+RevertTarget = Literal["needs_review", "unclassified"]
 
 
 class RevertRequest(BaseModel):

@@ -3,18 +3,16 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertCircle, BookOpen, ChevronDown, RefreshCw } from "lucide-react";
+import { AlertCircle, BookOpen, RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageLoader } from "@/components/ui/page-loader";
 import {
-  approveBulk,
   approveTransaction,
   classifyTransactions,
   getAutomationSettings,
-  getBooksGroups,
   getBooksQueue,
   getBooksSummary,
   getQuickBooksStatus,
@@ -27,14 +25,11 @@ import {
   type BooksReadiness,
   type CoaAccount,
   type QbSyncStatus,
-  type QueueGroup,
   type QueueItem,
   type RevertTarget,
 } from "@/lib/books";
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
-
-const EXCLUDED_TAB_LABEL = "Non-P&L";
 
 const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "unclassified", label: "New" },
@@ -42,9 +37,14 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "needs_review", label: "Review" },
   { id: "auto_approved", label: "Auto" },
   { id: "posted", label: "Posted" },
-  { id: "excluded", label: EXCLUDED_TAB_LABEL },
-  { id: "failed", label: "Failed" },
 ];
+
+const STATUS_TAB_HINTS: Partial<Record<QbSyncStatus, string>> = {
+  unclassified:
+    "Not categorized yet — not enough detail, or training has not started. Refresh or map manually.",
+  needs_review:
+    "Best guess from the transaction — approve or correct to train the system.",
+};
 
 function postingTypeLabel(
   type: string | null | undefined,
@@ -82,31 +82,15 @@ function coaForRow(
   return expenseCoa;
 }
 
-const POSTABLE_ACCOUNT_TYPES = new Set([
-  "Expense",
-  "Income",
-  "Other Expense",
-  "Cost of Goods Sold",
-]);
-
-function buildPostableCoa(accounts: CoaAccount[]): CoaAccount[] {
-  return accounts
-    .filter((a) => a.active && POSTABLE_ACCOUNT_TYPES.has(a.account_type ?? ""))
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
 const selectClass =
   "h-8 w-full max-w-full rounded-md border border-slate-700 bg-slate-900 px-1.5 text-xs text-white";
-
-const assignSelectClass =
-  "h-7 w-full min-w-0 appearance-none rounded-md border border-slate-700 bg-slate-900 py-1 pl-2 pr-6 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50";
 
 function confidenceBadge(
   confidence: number | null | undefined,
   syncStatus?: QbSyncStatus | null,
   reason?: string | null
 ) {
-  if (syncStatus === "excluded" || syncStatus === "unclassified") {
+  if (syncStatus === "unclassified") {
     return (
       <Badge className="bg-slate-600/20 text-slate-300" title={reason ?? undefined}>
         —
@@ -138,51 +122,6 @@ function signedAmount(row: QueueItem) {
   return `${incoming ? "+" : "-"}${formatCurrency(row.amount, row.currency)}`;
 }
 
-function teachAccountDisplay(rowId: string, row: QueueItem, edits: Record<string, string>) {
-  return edits[rowId] !== undefined ? edits[rowId] : (row.qb_account_id ?? "");
-}
-
-function isTeachAccountConfirmed(rowId: string, edits: Record<string, string>) {
-  const pick = edits[rowId];
-  return pick !== undefined && pick !== "";
-}
-
-function AccountDropdown({
-  value,
-  accounts,
-  disabled,
-  onChange,
-  placeholder = "Select account…",
-}: {
-  value: string;
-  accounts: CoaAccount[];
-  disabled?: boolean;
-  onChange: (accountId: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <div className="relative min-w-0">
-      <select
-        className={assignSelectClass}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        <option value="">{placeholder}</option>
-        {accounts.map((a) => (
-          <option key={a.qb_account_id} value={a.qb_account_id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-      <ChevronDown
-        className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-500"
-        aria-hidden
-      />
-    </div>
-  );
-}
-
 function kindLabel(row: QueueItem) {
   const type = postingTypeLabel(row.qb_posting_type, row.transaction_type, row.qb_confidence_reason);
   const direction = directionLabel(row);
@@ -197,7 +136,7 @@ function matchLabel(
 ) {
   const methodText = methodLabel(method);
   const title = [reason, methodText].filter(Boolean).join(" · ") || undefined;
-  if (syncStatus === "excluded" || syncStatus === "unclassified") {
+  if (syncStatus === "unclassified") {
     return { badge: confidenceBadge(confidence, syncStatus, reason), sub: null, title };
   }
   return {
@@ -223,20 +162,20 @@ function methodLabel(method: string | null | undefined) {
 
 function BooksQueueContent() {
   const searchParams = useSearchParams();
-  const status = (searchParams.get("status") as QbSyncStatus) || "pending";
+  const rawStatus = searchParams.get("status") as QbSyncStatus | null;
+  const status: QbSyncStatus =
+    rawStatus === "excluded" || rawStatus === "failed"
+      ? "needs_review"
+      : rawStatus || "unclassified";
   const page = Number(searchParams.get("page") || "1");
-  const view = searchParams.get("view") || "list";
 
   const [qbConnected, setQbConnected] = useState<boolean | null>(null);
   const [qbEnvironment, setQbEnvironment] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<BooksReadiness | null>(null);
   const [items, setItems] = useState<QueueItem[]>([]);
-  const [groups, setGroups] = useState<QueueGroup[]>([]);
   const [expenseCoa, setExpenseCoa] = useState<CoaAccount[]>([]);
   const [incomeCoa, setIncomeCoa] = useState<CoaAccount[]>([]);
-  const [postableCoa, setPostableCoa] = useState<CoaAccount[]>([]);
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
-  const [teachAccountEdits, setTeachAccountEdits] = useState<Record<string, string>>({});
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [coverage, setCoverage] = useState<{ total_bank_transactions: number; classified: number; unclassified: number } | null>(null);
@@ -257,13 +196,10 @@ function BooksQueueContent() {
     7 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
 
   const refreshQueue = useCallback(
-    async (statusFilter: QbSyncStatus, pageNum: number, viewMode: string) => {
-      const [queue, sum, grp] = await Promise.all([
+    async (statusFilter: QbSyncStatus, pageNum: number) => {
+      const [queue, sum] = await Promise.all([
         getBooksQueue(statusFilter, pageNum, 20),
         getBooksSummary(),
-        viewMode === "grouped" && (statusFilter === "pending" || statusFilter === "needs_review")
-          ? getBooksGroups(statusFilter)
-          : Promise.resolve([]),
       ]);
       setItems(queue.items);
       setTotalPages(queue.total_pages);
@@ -271,7 +207,6 @@ function BooksQueueContent() {
       setSummary(sum.counts);
       setCoverage(sum.coverage ?? null);
       setReadiness(sum.readiness ?? null);
-      setGroups(grp);
     },
     []
   );
@@ -296,14 +231,14 @@ function BooksQueueContent() {
         );
         if (result.classified === 0) break;
       }
-      await refreshQueue(status, page, view);
+      await refreshQueue(status, page);
     } catch {
       /* non-blocking */
     } finally {
       setClassifying(false);
       setClassifyProgress(null);
     }
-  }, [status, page, view, refreshQueue]);
+  }, [status, page, refreshQueue]);
 
   const refreshData = useCallback(
     async (opts?: { classify?: boolean }) => {
@@ -318,12 +253,12 @@ function BooksQueueContent() {
         setSummary(sum.counts);
         setCoverage(sum.coverage ?? null);
         if (sum.automation) setAutomation(sum.automation);
-        await refreshQueue(status, page, view);
+        await refreshQueue(status, page);
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to refresh books queue");
       }
     },
-    [status, page, view, refreshQueue, runClassifyAll]
+    [status, page, refreshQueue, runClassifyAll]
   );
 
   useEffect(() => {
@@ -348,16 +283,12 @@ function BooksQueueContent() {
 
         if (!sum.readiness?.bank_connected) return;
 
-        const needsGroups =
-          view === "grouped" && (status === "pending" || status === "needs_review");
-
-        const [coa, expense, income, auto, queue, grp] = await Promise.all([
+        const [coa, expense, income, auto, queue] = await Promise.all([
           listCoa(),
           listCoa("Expense"),
           listCoa("Income"),
           sum.automation ? Promise.resolve(null) : getAutomationSettings(),
           getBooksQueue(status, page, 20),
-          needsGroups ? getBooksGroups(status) : Promise.resolve([] as QueueGroup[]),
         ]);
         if (cancelled) return;
 
@@ -366,12 +297,10 @@ function BooksQueueContent() {
 
         setExpenseCoa(expense.items);
         setIncomeCoa(income.items);
-        setPostableCoa(buildPostableCoa(coa.items));
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
         setQueueTotal(queue.total);
-        setGroups(grp);
         setBootstrapped(true);
       } catch (e) {
         if (!cancelled) {
@@ -401,7 +330,7 @@ function BooksQueueContent() {
     async function loadQueue() {
       setQueueLoading(true);
       try {
-        await refreshQueue(status, page, view);
+        await refreshQueue(status, page);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof ApiError ? e.message : "Failed to load queue");
@@ -415,7 +344,7 @@ function BooksQueueContent() {
     return () => {
       cancelled = true;
     };
-  }, [status, page, view, bootstrapped, qbConnected, refreshQueue]);
+  }, [status, page, bootstrapped, qbConnected, refreshQueue]);
 
   async function handleApprove(row: QueueItem, post = true) {
     const accountId = accountEdits[row.id] || row.qb_account_id;
@@ -431,27 +360,6 @@ function BooksQueueContent() {
       await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Approve failed");
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
-  async function handleGroupApprove(group: QueueGroup) {
-    if (!group.qb_account_id) {
-      setError("No suggested account for this group");
-      return;
-    }
-    setActionLoading(`group-${group.payee_pattern}`);
-    try {
-      const result = await approveBulk({
-        payee_pattern: group.payee_pattern,
-        final_account_id: group.qb_account_id,
-        post: true,
-      });
-      setInfo(`Approved ${result.approved} transactions in group`);
-      await refreshData();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Group approve failed");
     } finally {
       setActionLoading(null);
     }
@@ -489,7 +397,6 @@ function BooksQueueContent() {
     setActionLoading(id);
     setError(null);
     const labels: Record<RevertTarget, string> = {
-      excluded: EXCLUDED_TAB_LABEL,
       needs_review: "Review",
       unclassified: "New",
     };
@@ -499,26 +406,6 @@ function BooksQueueContent() {
       await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Could not move transaction");
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
-  async function handleTeachAccount(id: string, accountId: string) {
-    if (!accountId || !isTeachAccountConfirmed(id, teachAccountEdits)) return;
-    setActionLoading(id);
-    setError(null);
-    try {
-      await approveTransaction(id, accountId, false);
-      setInfo("Account assigned — moved to Pending");
-      setTeachAccountEdits((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-      await refreshData();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not assign account");
     } finally {
       setActionLoading(null);
     }
@@ -649,7 +536,7 @@ function BooksQueueContent() {
           return (
             <Link
               key={tab.id}
-              href={`/books?status=${tab.id}&view=${view}`}
+              href={`/books?status=${tab.id}`}
               className={`rounded-md px-2.5 py-1 text-xs transition-colors md:text-sm ${
                 active
                   ? "bg-blue-600/20 text-blue-400 ring-1 ring-blue-500/30"
@@ -661,54 +548,17 @@ function BooksQueueContent() {
             </Link>
           );
         })}
-        <Link
-          href={`/books?status=${status}&view=${view === "grouped" ? "list" : "grouped"}`}
-          className="rounded-md bg-slate-800/50 px-2.5 py-1 text-xs text-slate-400 hover:text-white md:text-sm"
-        >
-          {view === "grouped" ? "List" : "Grouped"}
-        </Link>
       </div>
 
-      {status === "excluded" && (
+      {STATUS_TAB_HINTS[status] && (
         <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2 text-sm text-slate-300">
-          Transfers, deposits, loans, and reversals — not posted as income or expense. Use{" "}
-          <span className="font-medium text-white">Map</span> to post to another QuickBooks account if
-          needed.
+          {STATUS_TAB_HINTS[status]}
         </div>
       )}
 
       {classifying && (
         <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-3 py-2 text-sm text-blue-200">
           {classifyProgress ?? "Classifying…"}
-        </div>
-      )}
-
-      {view === "grouped" && groups.length > 0 && (
-        <div className="space-y-3">
-          {groups.map((g) => (
-            <div
-              key={g.payee_pattern}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4"
-            >
-              <div>
-                <p className="font-medium text-white">{g.payee_pattern}</p>
-                <p className="text-sm text-slate-400">
-                  {g.count} transactions · {formatCurrency(g.total_amount, "NGN")} →{" "}
-                  {g.qb_account_name || "—"}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {confidenceBadge(g.qb_confidence, status)}
-                <Button
-                  size="sm"
-                  disabled={actionLoading === `group-${g.payee_pattern}`}
-                  onClick={() => handleGroupApprove(g)}
-                >
-                  Approve all
-                </Button>
-              </div>
-            </div>
-          ))}
         </div>
       )}
 
@@ -816,15 +666,13 @@ function BooksQueueContent() {
                       className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
                         row.qb_posting_type === "deposit" ||
                         (row.transaction_type === "credit" &&
-                          row.qb_posting_type !== "refund" &&
-                          row.qb_sync_status !== "excluded")
+                          row.qb_posting_type !== "refund")
                           ? "bg-emerald-900/40 text-emerald-300"
                           : row.qb_posting_type === "refund"
                             ? "bg-violet-900/40 text-violet-300"
                             : row.qb_posting_type === "fee"
                               ? "bg-amber-900/40 text-amber-300"
-                              : row.qb_posting_type === "transfer" ||
-                                  row.qb_sync_status === "excluded"
+                              : row.qb_posting_type === "transfer"
                                 ? "bg-slate-800 text-slate-400"
                                 : "bg-blue-900/40 text-blue-300"
                       }`}
@@ -833,17 +681,8 @@ function BooksQueueContent() {
                     </span>
                   </td>
                   <td className="px-2 py-2 min-w-0">
-                    {status === "excluded" ? (
-                      <AccountDropdown
-                        value={teachAccountDisplay(row.id, row, teachAccountEdits)}
-                        accounts={postableCoa}
-                        disabled={actionLoading === row.id}
-                        onChange={(accountId) =>
-                          setTeachAccountEdits((prev) => ({ ...prev, [row.id]: accountId }))
-                        }
-                      />
-                    ) : (status === "pending" || status === "needs_review") &&
-                      coaForRow(row, expenseCoa, incomeCoa).length > 0 ? (
+                    {(status === "pending" || status === "needs_review") &&
+                    coaForRow(row, expenseCoa, incomeCoa).length > 0 ? (
                       <select
                         className={selectClass}
                         value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
@@ -920,30 +759,21 @@ function BooksQueueContent() {
                           >
                             New
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "excluded")}
-                            title={`Mark as ${EXCLUDED_TAB_LABEL}`}
-                          >
-                            {EXCLUDED_TAB_LABEL}
-                          </Button>
                         </>
                       )}
                       {status === "needs_review" && (
                         <>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "excluded")}
-                            title={`Mark as ${EXCLUDED_TAB_LABEL}`}
-                          >
-                            {EXCLUDED_TAB_LABEL}
-                          </Button>
+                          {(row.qb_error || row.qb_sync_status === "failed") && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              disabled={actionLoading === row.id}
+                              onClick={() => handlePost(row.id)}
+                            >
+                              Retry
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -971,64 +801,11 @@ function BooksQueueContent() {
                             variant="ghost"
                             className="h-7 px-1.5 text-xs"
                             disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "excluded")}
-                            title={`Mark as ${EXCLUDED_TAB_LABEL}`}
-                          >
-                            {EXCLUDED_TAB_LABEL}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
                             onClick={() => handleRevert(row.id, "unclassified")}
                           >
                             New
                           </Button>
                         </>
-                      )}
-                      {status === "failed" && (
-                        <>
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => handlePost(row.id)}>
-                            Retry
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "needs_review")}
-                          >
-                            Review
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "unclassified")}
-                          >
-                            New
-                          </Button>
-                        </>
-                      )}
-                      {status === "excluded" && (
-                        <Button
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          disabled={
-                            actionLoading === row.id ||
-                            !isTeachAccountConfirmed(row.id, teachAccountEdits)
-                          }
-                          title={
-                            isTeachAccountConfirmed(row.id, teachAccountEdits)
-                              ? "Post to QuickBooks (non-P&L account) and move to Pending"
-                              : "Choose a QuickBooks account first"
-                          }
-                          onClick={() => handleTeachAccount(row.id, teachAccountEdits[row.id]!)}
-                        >
-                          Map
-                        </Button>
                       )}
                       {status === "unclassified" && (
                         <Button
@@ -1054,7 +831,7 @@ function BooksQueueContent() {
       {totalPages > 1 && (
         <div className="flex justify-center gap-2">
           {page > 1 && (
-            <Link href={`/books?status=${status}&page=${page - 1}&view=${view}`}>
+            <Link href={`/books?status=${status}&page=${page - 1}`}>
               <Button variant="outline" size="sm">
                 Previous
               </Button>
@@ -1065,7 +842,7 @@ function BooksQueueContent() {
             {totalPages}
           </span>
           {page < totalPages && (
-            <Link href={`/books?status=${status}&page=${page + 1}&view=${view}`}>
+            <Link href={`/books?status=${status}&page=${page + 1}`}>
               <Button variant="outline" size="sm">
                 Next
               </Button>
