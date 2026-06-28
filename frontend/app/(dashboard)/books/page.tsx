@@ -252,6 +252,9 @@ function BooksQueueContent() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [classifying, setClassifying] = useState(false);
+  const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
+  const tableColSpan =
+    7 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
 
   const refreshQueue = useCallback(
     async (statusFilter: QbSyncStatus, pageNum: number, viewMode: string) => {
@@ -727,6 +730,7 @@ function BooksQueueContent() {
           <colgroup>
             {(status === "pending" || status === "needs_review") && <col className="w-8" />}
             <col className="w-[4.5rem]" />
+            {showBankColumn && <col className="w-[6rem]" />}
             <col />
             <col className="w-[5.5rem]" />
             <col className="w-[16%]" />
@@ -742,6 +746,7 @@ function BooksQueueContent() {
                 </th>
               )}
               <th className="px-2 py-2">Date</th>
+              {showBankColumn && <th className="px-2 py-2">Bank</th>}
               <th className="px-2 py-2">Payee</th>
               <th className="px-2 py-2">Kind</th>
               <th className="px-2 py-2">QB Account</th>
@@ -754,7 +759,7 @@ function BooksQueueContent() {
             {items.length === 0 ? (
               <tr>
                 <td
-                  colSpan={status === "pending" || status === "needs_review" ? 8 : 7}
+                  colSpan={tableColSpan}
                   className="p-8 text-center text-slate-500"
                 >
                   No transactions in this queue.{" "}
@@ -785,6 +790,16 @@ function BooksQueueContent() {
                     </td>
                   )}
                   <td className="px-2 py-2 text-xs text-slate-400">{row.transaction_date.slice(5)}</td>
+                  {showBankColumn && (
+                    <td
+                      className="px-2 py-2 text-xs text-slate-400"
+                      title={row.account_name ?? undefined}
+                    >
+                      <span className="cell-truncate block max-w-[6rem]">
+                        {row.account_name || "—"}
+                      </span>
+                    </td>
+                  )}
                   <td className="px-2 py-2 min-w-0">
                     <div className="cell-truncate font-medium text-white" title={row.merchant_name ?? undefined}>
                       {row.merchant_name || "—"}

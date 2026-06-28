@@ -11,6 +11,11 @@ import pandas as pd
 
 from app.database import get_supabase, run_db
 from app.models.analysis_filters import AnalysisFilters
+from app.services.bank_transaction_scope import (
+    SCOPE_PAGE_SIZE,
+    apply_active_bank_scope,
+    get_active_bank_accounts,
+)
 from app.services.transaction_enrichment import extract_transaction_details
 from app.services.transfer_utils import is_transfer, mark_transfers_df, split_spend_income
 
@@ -41,48 +46,78 @@ def _period_totals(df: pd.DataFrame, include_transfers: bool) -> dict[str, float
 
 
 async def fetch_accounts_meta(user_id: str) -> tuple[dict[str, dict], list[dict]]:
-    sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("id, account_name, provider, status")
-        .eq("user_id", user_id)
-        .neq("status", "disconnected")
-        .execute()
-    )
-    accounts = res.data or []
+    accounts, active_ids = await get_active_bank_accounts(user_id)
     by_id = {
         a["id"]: {
             "account_name": a.get("account_name") or "Unknown",
             "provider": a.get("provider") or "unknown",
         }
         for a in accounts
+        if a["id"] in active_ids
     }
     return by_id, accounts
 
 
-async def fetch_transactions_df(user_id: str, filters: AnalysisFilters) -> pd.DataFrame:
+async def _fetch_scoped_rows_for_analytics(
+    user_id: str,
+    active_bank_ids: set[str],
+    *,
+    start: str,
+    end: str,
+    providers: list[str] | None = None,
+    account_ids: list[str] | None = None,
+    columns: str,
+) -> list[dict]:
     sb = get_supabase()
-    start, end = filters.resolved_date_range()
+    rows: list[dict] = []
+    offset = 0
+    allowed_accounts = active_bank_ids
+    if account_ids:
+        allowed_accounts = active_bank_ids.intersection(set(account_ids))
+        if not allowed_accounts:
+            return []
 
-    query = (
-        sb.table("transactions")
-        .select(
+    while True:
+        def _page(off: int = offset) -> object:
+            q = sb.table("transactions").select(columns).eq("user_id", user_id)
+            q = apply_active_bank_scope(q, active_bank_ids)
+            q = q.gte("transaction_date", start).lte("transaction_date", end)
+            if providers:
+                q = q.in_("source_provider", providers)
+            if account_ids:
+                q = q.in_("account_id", ",".join(str(i) for i in allowed_accounts))
+            return q.range(off, off + SCOPE_PAGE_SIZE - 1).execute()
+
+        batch = (await run_db(_page)).data or []
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < SCOPE_PAGE_SIZE:
+            break
+        offset += SCOPE_PAGE_SIZE
+    return rows
+
+
+async def fetch_transactions_df(user_id: str, filters: AnalysisFilters) -> pd.DataFrame:
+    start, end = filters.resolved_date_range()
+    _, active_bank_ids = await get_active_bank_accounts(user_id)
+    if not active_bank_ids:
+        return pd.DataFrame()
+
+    account_filter = list(filters.account_ids) if filters.account_ids else None
+    rows = await _fetch_scoped_rows_for_analytics(
+        user_id,
+        active_bank_ids,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        providers=list(filters.providers) if filters.providers else None,
+        account_ids=account_filter,
+        columns=(
             "id, transaction_date, amount, transaction_type, category, sub_category, "
             "merchant_name, description, currency, account_id, source_provider, "
             "is_recurring, raw_metadata"
-        )
-        .eq("user_id", user_id)
-        .gte("transaction_date", start.isoformat())
-        .lte("transaction_date", end.isoformat())
+        ),
     )
-
-    if filters.providers:
-        query = query.in_("source_provider", filters.providers)
-    if filters.account_ids:
-        query = query.in_("account_id", filters.account_ids)
-
-    res = await run_db(lambda: query.execute())
-    rows = res.data or []
     if not rows:
         return pd.DataFrame()
 
@@ -119,36 +154,31 @@ async def fetch_transactions_df(user_id: str, filters: AnalysisFilters) -> pd.Da
 
 
 async def get_analytics_meta(user_id: str) -> dict[str, Any]:
-    sb = get_supabase()
-    account_map, accounts = await fetch_accounts_meta(user_id)
+    _, accounts = await fetch_accounts_meta(user_id)
+    _, active_bank_ids = await get_active_bank_accounts(user_id)
+    if not active_bank_ids:
+        return {
+            "accounts": [],
+            "date_range": {"min": None, "max": None},
+            "providers": [],
+            "currencies": [],
+        }
 
-    txn_res = await run_db(
-        lambda: sb.table("transactions")
-        .select("transaction_date, account_id, currency, source_provider")
-        .eq("user_id", user_id)
-        .order("transaction_date")
-        .execute()
+    rows = await _fetch_scoped_rows_for_analytics(
+        user_id,
+        active_bank_ids,
+        start="1970-01-01",
+        end="2099-12-31",
+        columns="transaction_date, account_id, currency, source_provider",
     )
-    rows = txn_res.data or []
     dates = [r["transaction_date"] for r in rows if r.get("transaction_date")]
     currencies = sorted({r.get("currency") or "USD" for r in rows})
 
     account_currencies: dict[str, str] = {}
-    account_providers: dict[str, str] = {}
     for r in rows:
         aid = r.get("account_id")
         if aid and aid not in account_currencies:
             account_currencies[aid] = r.get("currency") or "USD"
-            account_providers[aid] = r.get("source_provider") or "unknown"
-
-    known_ids = {a["id"] for a in accounts}
-    for aid in account_currencies:
-        if aid not in known_ids:
-            accounts.append({
-                "id": aid,
-                "account_name": f"Account ({aid[:8]}…)",
-                "provider": account_providers.get(aid, "unknown"),
-            })
 
     return {
         "accounts": [

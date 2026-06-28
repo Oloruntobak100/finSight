@@ -17,11 +17,13 @@ import {
 } from "@/lib/transaction-display";
 import {
   getDefaultVisibleColumns,
-  loadVisibleColumns,
-  saveVisibleColumns,
   TRANSACTION_COLUMNS,
   type TransactionColumnId,
 } from "@/lib/transaction-columns";
+import {
+  loadTransactionColumnsFromServer,
+  saveTransactionColumnsToServer,
+} from "@/lib/user-preferences";
 import { ColumnPicker } from "@/components/transactions/column-picker";
 import { TableRowSkeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
@@ -125,11 +127,11 @@ function TransactionsPageContent() {
 
   function updateVisibleColumns(next: Record<TransactionColumnId, boolean>) {
     setVisibleColumns(next);
-    saveVisibleColumns(next);
+    void saveTransactionColumnsToServer(next);
   }
 
   useEffect(() => {
-    setVisibleColumns(loadVisibleColumns());
+    void loadTransactionColumnsFromServer().then(setVisibleColumns);
   }, []);
 
   useEffect(() => {

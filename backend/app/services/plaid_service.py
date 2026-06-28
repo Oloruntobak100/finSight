@@ -23,6 +23,7 @@ from plaid.model.webhook_type import WebhookType
 
 from app.config import settings
 from app.database import get_supabase, run_db
+from app.services.bank_transaction_scope import archive_detached_bank_transactions, archive_transactions_for_account
 from app.services.token_service import decrypt_token, encrypt_token
 from app.services.transaction_enrichment import build_plaid_transaction_row, load_user_category_rules
 
@@ -658,7 +659,10 @@ async def disconnect_plaid_account(user_id: str, account_id: str) -> None:
         # Item may already be removed on Plaid's side; still clean up locally.
         pass
 
+    await archive_transactions_for_account(user_id, account_id)
+
     await run_db(lambda: sb.table("connected_accounts").delete().eq("id", account_id).execute())
+    await archive_detached_bank_transactions(user_id)
     await run_db(
         lambda: sb.table("oauth_audit_log")
         .insert({"user_id": user_id, "provider": "plaid", "event": "revoked", "metadata": {"account_id": account_id}})

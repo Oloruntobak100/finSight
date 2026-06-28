@@ -11,8 +11,8 @@ import httpx
 
 
 from app.config import settings
-
 from app.database import get_supabase, run_db
+from app.services.bank_transaction_scope import archive_detached_bank_transactions, archive_transactions_for_account
 
 from app.services.token_service import encrypt_token
 
@@ -532,6 +532,8 @@ async def disconnect_mono_account(user_id: str, account_id: str) -> None:
 
     sb = get_supabase()
 
+    await archive_transactions_for_account(user_id, account_id)
+
     await run_db(
 
         lambda: sb.table("connected_accounts")
@@ -547,6 +549,8 @@ async def disconnect_mono_account(user_id: str, account_id: str) -> None:
         .execute()
 
     )
+
+    await archive_detached_bank_transactions(user_id)
 
     await run_db(
 

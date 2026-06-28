@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -42,9 +43,16 @@ from app.services.transaction_posting_utils import (
 )
 from app.services.transfer_utils import is_transfer
 
+from app.services.bank_transaction_scope import (
+    BANK_PROVIDERS,
+    apply_active_bank_scope,
+    count_scoped_transactions,
+    get_active_bank_accounts,
+    iter_scoped_transactions,
+)
+
 logger = logging.getLogger(__name__)
 
-BANK_PROVIDERS = ("plaid", "mono")
 QbSyncStatus = Literal[
     "pending",
     "needs_review",
@@ -61,14 +69,23 @@ CONFIDENCE_FINGERPRINT_MIN = FINGERPRINT_MATCH_MIN
 CLASSIFY_BATCH_SIZE = 500
 CLASSIFY_MAX_ROWS = 5000
 
+SUMMARY_STATUSES = (
+    "pending",
+    "needs_review",
+    "auto_approved",
+    "posted",
+    "excluded",
+    "failed",
+    "skipped",
+)
+
 
 def _apply_books_account_filter(query: Any, active_bank_ids: set[str]) -> Any:
-    """Active, non-archived bank rows plus orphaned rows pending re-link after reconnect."""
-    query = query.is_("archived_at", "null")
-    if not active_bank_ids:
-        return query
-    id_list = ",".join(str(i) for i in active_bank_ids)
-    return query.or_(f"account_id.in.({id_list}),account_id.is.null")
+    return apply_active_bank_scope(query, active_bank_ids)
+
+
+async def _active_bank_accounts(user_id: str) -> tuple[list[dict[str, Any]], set[str]]:
+    return await get_active_bank_accounts(user_id)
 
 
 def _auto_detect_reason(txn: dict[str, Any], kind: PostingKind) -> str:
@@ -805,26 +822,20 @@ async def get_queue_groups(
     user_id: str,
     status: str = "pending",
 ) -> list[dict[str, Any]]:
-    sb = get_supabase()
     _, active_bank_ids = await _active_bank_accounts(user_id)
     if not active_bank_ids:
         return []
 
-    query = (
-        sb.table("transactions")
-        .select("*")
-        .eq("user_id", user_id)
-        .in_("source_provider", list(BANK_PROVIDERS))
-    )
-    query = _apply_books_account_filter(query, active_bank_ids)
-    if status == "unclassified":
-        query = query.is_("qb_sync_status", "null")
-    else:
-        query = query.eq("qb_sync_status", status)
+    def _status_filter(q: Any) -> Any:
+        if status == "unclassified":
+            return q.is_("qb_sync_status", "null")
+        return q.eq("qb_sync_status", status)
 
-    res = await run_db(lambda: query.execute())
+    rows = await iter_scoped_transactions(
+        user_id, active_bank_ids, extra_filter=_status_filter
+    )
     groups: dict[str, dict[str, Any]] = {}
-    for row in res.data or []:
+    for row in rows:
         key = row.get("payee_pattern") or row.get("merchant_name") or "unknown"
         if key not in groups:
             groups[key] = {
@@ -846,23 +857,6 @@ async def get_queue_groups(
             g["qb_account_id"] = row.get("qb_account_id")
             g["qb_account_name"] = row.get("qb_account_name")
     return sorted(groups.values(), key=lambda x: -x["count"])
-
-
-async def _active_bank_accounts(user_id: str) -> tuple[list[dict[str, Any]], set[str]]:
-    """Connected Plaid/Mono accounts only — Books uses realtime linked banks."""
-    sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("id, provider, account_name, status, last_synced_at")
-        .eq("user_id", user_id)
-        .execute()
-    )
-    accounts = [
-        a
-        for a in (res.data or [])
-        if a.get("provider") in BANK_PROVIDERS and a.get("status") != "disconnected"
-    ]
-    return accounts, {a["id"] for a in accounts}
 
 
 async def get_books_readiness(user_id: str) -> dict[str, Any]:
@@ -889,7 +883,6 @@ async def get_books_readiness(user_id: str) -> dict[str, Any]:
 
 
 async def get_summary(user_id: str) -> dict[str, Any]:
-    sb = get_supabase()
     _, active_bank_ids = await _active_bank_accounts(user_id)
     counts: dict[str, int] = {}
     coverage = {
@@ -898,23 +891,25 @@ async def get_summary(user_id: str) -> dict[str, Any]:
         "unclassified": 0,
     }
     if active_bank_ids:
-        query = (
-            sb.table("transactions")
-            .select("qb_sync_status")
-            .eq("user_id", user_id)
-            .in_("source_provider", list(BANK_PROVIDERS))
-        )
-        query = _apply_books_account_filter(query, active_bank_ids)
-        res = await run_db(lambda: query.execute())
-        for row in res.data or []:
-            coverage["total_bank_transactions"] += 1
-            st = row.get("qb_sync_status")
-            if st is None:
-                coverage["unclassified"] += 1
-                counts["unclassified"] = counts.get("unclassified", 0) + 1
-            else:
-                coverage["classified"] += 1
-                counts[st] = counts.get(st, 0) + 1
+        count_tasks = [
+            count_scoped_transactions(user_id, active_bank_ids, unclassified=True),
+            *[
+                count_scoped_transactions(user_id, active_bank_ids, qb_sync_status=st)
+                for st in SUMMARY_STATUSES
+            ],
+        ]
+        results = await asyncio.gather(*count_tasks)
+        unclassified = results[0]
+        counts["unclassified"] = unclassified
+        coverage["unclassified"] = unclassified
+
+        for st, n in zip(SUMMARY_STATUSES, results[1:], strict=True):
+            if n:
+                counts[st] = n
+
+        coverage["total_bank_transactions"] = sum(counts.values())
+        coverage["classified"] = coverage["total_bank_transactions"] - unclassified
+
     automation = await get_user_automation(user_id)
     readiness = await get_books_readiness(user_id)
     return {"counts": counts, "coverage": coverage, "automation": automation, "readiness": readiness}

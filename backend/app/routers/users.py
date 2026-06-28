@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter
 
 from app.auth.dependencies import CurrentUser
+from app.database import get_supabase, run_db
 from app.services.books_service import get_learning_progress, get_user_automation, update_user_automation
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -18,6 +19,52 @@ class AutomationSettingsUpdate(BaseModel):
     auto_approve_enabled: bool | None = None
     auto_approve_threshold: float | None = Field(None, ge=0.70, le=0.99)
     digest_enabled: bool | None = None
+
+
+class UiPreferencesResponse(BaseModel):
+    ui_preferences: dict
+
+
+class UiPreferencesUpdate(BaseModel):
+    ui_preferences: dict
+
+
+async def _get_ui_preferences(user_id: str) -> dict:
+    sb = get_supabase()
+    res = await run_db(
+        lambda: sb.table("users")
+        .select("ui_preferences")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
+        return {}
+    prefs = rows[0].get("ui_preferences")
+    return prefs if isinstance(prefs, dict) else {}
+
+
+@router.get("/ui-preferences", response_model=UiPreferencesResponse)
+async def get_ui_preferences(user_id: CurrentUser) -> UiPreferencesResponse:
+    return UiPreferencesResponse(ui_preferences=await _get_ui_preferences(user_id))
+
+
+@router.patch("/ui-preferences", response_model=UiPreferencesResponse)
+async def patch_ui_preferences(
+    user_id: CurrentUser,
+    body: UiPreferencesUpdate,
+) -> UiPreferencesResponse:
+    sb = get_supabase()
+    current = await _get_ui_preferences(user_id)
+    merged = {**current, **body.ui_preferences}
+    await run_db(
+        lambda: sb.table("users")
+        .update({"ui_preferences": merged})
+        .eq("id", user_id)
+        .execute()
+    )
+    return UiPreferencesResponse(ui_preferences=merged)
 
 
 @router.get("/automation", response_model=AutomationSettingsResponse)

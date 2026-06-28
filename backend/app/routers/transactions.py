@@ -8,51 +8,78 @@ from app.config import settings
 from app.database import get_supabase, run_db
 from app.models.transaction import CategoryUpdateRequest, TransactionDetails, TransactionListResponse, TransactionResponse
 from app.services import synthetic_feed_service as synthetic_feed_svc
+from app.services.bank_transaction_scope import (
+    apply_active_bank_scope,
+    archive_detached_bank_transactions,
+    count_scoped_transactions,
+    get_active_bank_accounts,
+)
 from app.services.transaction_enrichment import extract_transaction_details, reprocess_stored_transactions
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
+def _bank_map(accounts: list[dict]) -> dict[str, str | None]:
+    return {
+        row["id"]: row.get("account_name")
+        for row in accounts
+        if row.get("account_name")
+    }
+
+
 @router.get("/meta")
 async def transaction_meta(user_id: CurrentUser) -> dict:
     sb = get_supabase()
-    txns_res = await run_db(
-        lambda: sb.table("transactions").select("category").eq("user_id", user_id).execute()
-    )
-    accounts_res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("id, account_name, provider")
-        .eq("user_id", user_id)
-        .neq("status", "disconnected")
-        .order("account_name")
-        .execute()
-    )
-    categories = sorted(
-        {row["category"] for row in (txns_res.data or []) if row.get("category")}
-    )
-    total_res = await run_db(
-        lambda: sb.table("transactions")
-        .select("id", count="exact")
-        .eq("user_id", user_id)
-        .is_("archived_at", "null")
-        .execute()
-    )
-    synthetic_res = await run_db(
-        lambda: sb.table("transactions")
-        .select("id", count="exact")
-        .eq("user_id", user_id)
-        .eq("is_synthetic", True)
-        .is_("archived_at", "null")
-        .execute()
-    )
+    bank_accounts, active_bank_ids = await get_active_bank_accounts(user_id)
+
+    categories: set[str] = set()
+    if active_bank_ids:
+        offset = 0
+        while True:
+            def _page(off: int = offset) -> object:
+                q = sb.table("transactions").select("category").eq("user_id", user_id)
+                q = apply_active_bank_scope(q, active_bank_ids)
+                return q.range(off, off + 499).execute()
+
+            batch = (await run_db(_page)).data or []
+            if not batch:
+                break
+            for row in batch:
+                if row.get("category"):
+                    categories.add(row["category"])
+            if len(batch) < 500:
+                break
+            offset += 500
+
+    total = await count_scoped_transactions(user_id, active_bank_ids) if active_bank_ids else 0
+    synthetic = 0
+    if active_bank_ids:
+        syn_res = await run_db(
+            lambda: apply_active_bank_scope(
+                sb.table("transactions")
+                .select("id", count="exact")
+                .eq("user_id", user_id)
+                .eq("is_synthetic", True),
+                active_bank_ids,
+            ).execute()
+        )
+        synthetic = syn_res.count or 0
+
     counts = {
-        "total": total_res.count or 0,
-        "synthetic": synthetic_res.count or 0,
-        "non_synthetic": (total_res.count or 0) - (synthetic_res.count or 0),
+        "total": total,
+        "synthetic": synthetic,
+        "non_synthetic": total - synthetic,
     }
     return {
-        "categories": categories,
-        "accounts": accounts_res.data or [],
+        "categories": sorted(categories),
+        "accounts": [
+            {
+                "id": a["id"],
+                "account_name": a.get("account_name"),
+                "provider": a.get("provider"),
+            }
+            for a in bank_accounts
+        ],
         "counts": counts,
         "cleanup_available": settings.synthetic_feed_allowed and counts["non_synthetic"] > 0,
     }
@@ -63,6 +90,12 @@ async def cleanup_keep_synthetic(user_id: CurrentUser) -> dict:
     if not settings.synthetic_feed_allowed:
         raise HTTPException(status_code=403, detail="Cleanup is only available in Mono sandbox / synthetic feed mode.")
     return await synthetic_feed_svc.keep_synthetic_only_user(user_id)
+
+
+@router.post("/cleanup/archive-detached")
+async def cleanup_archive_detached(user_id: CurrentUser) -> dict:
+    archived = await archive_detached_bank_transactions(user_id)
+    return {"archived": archived}
 
 
 @router.get("", response_model=TransactionListResponse)
@@ -82,10 +115,24 @@ async def list_transactions(
     include_archived: bool = False,
 ) -> TransactionListResponse:
     sb = get_supabase()
+    bank_accounts, active_bank_ids = await get_active_bank_accounts(user_id)
+    bank_map = _bank_map(bank_accounts)
+
+    if not active_bank_ids:
+        return TransactionListResponse(
+            items=[],
+            total=0,
+            page=page,
+            limit=limit,
+            total_pages=1,
+        )
+
     query = sb.table("transactions").select("*", count="exact").eq("user_id", user_id)
 
     if not include_archived:
-        query = query.is_("archived_at", "null")
+        query = apply_active_bank_scope(query, active_bank_ids)
+    else:
+        query = query.in_("source_provider", ["mono", "plaid"])
 
     if date_from:
         query = query.gte("transaction_date", date_from)
@@ -98,6 +145,8 @@ async def list_transactions(
     if search:
         query = query.or_(f"merchant_name.ilike.%{search}%,description.ilike.%{search}%")
     if account_id:
+        if account_id not in active_bank_ids:
+            raise HTTPException(status_code=400, detail="Account is not an active connected bank.")
         query = query.eq("account_id", account_id)
     if transaction_type in ("debit", "credit"):
         query = query.eq("transaction_type", transaction_type)
@@ -114,22 +163,10 @@ async def list_transactions(
         .execute()
     )
 
-    accounts_res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("id, account_name")
-        .eq("user_id", user_id)
-        .execute()
-    )
-    bank_map = {
-        row["id"]: row.get("account_name")
-        for row in (accounts_res.data or [])
-        if row.get("account_name")
-    }
-
     total = res.count or 0
     items = []
     for row in res.data or []:
-        account_id = row.get("account_id")
+        row_account_id = row.get("account_id")
         raw = row.get("raw_metadata") if isinstance(row.get("raw_metadata"), dict) else None
         details_data = extract_transaction_details(
             source_provider=row.get("source_provider") or "",
@@ -141,7 +178,7 @@ async def list_transactions(
         items.append(
             TransactionResponse(
                 **row,
-                account_name=bank_map.get(account_id) if account_id else None,
+                account_name=bank_map.get(row_account_id) if row_account_id else None,
                 details=TransactionDetails(**details_data),
             )
         )
