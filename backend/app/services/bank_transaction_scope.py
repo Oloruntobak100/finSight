@@ -40,8 +40,7 @@ def apply_active_bank_scope(
         query = query.in_("source_provider", list(BANK_PROVIDERS))
     if not active_bank_ids:
         return query.eq("account_id", "00000000-0000-0000-0000-000000000000")
-    id_list = ",".join(str(i) for i in active_bank_ids)
-    return query.in_("account_id", id_list)
+    return query.in_("account_id", list(active_bank_ids))
 
 
 async def _fetch_scoped_transaction_ids(

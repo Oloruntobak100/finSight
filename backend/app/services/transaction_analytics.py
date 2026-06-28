@@ -85,7 +85,7 @@ async def _fetch_scoped_rows_for_analytics(
             if providers:
                 q = q.in_("source_provider", providers)
             if account_ids:
-                q = q.in_("account_id", ",".join(str(i) for i in allowed_accounts))
+                q = q.in_("account_id", list(allowed_accounts))
             return q.range(off, off + SCOPE_PAGE_SIZE - 1).execute()
 
         batch = (await run_db(_page)).data or []

@@ -31,7 +31,9 @@ def test_apply_active_bank_scope_filters_by_account_ids():
     apply_active_bank_scope(query, active)
 
     query.in_.assert_any_call("source_provider", list(("plaid", "mono")))
-    query.in_.assert_any_call("account_id", "aaa-111,bbb-222")
+    account_calls = [c.args for c in query.in_.call_args_list if c.args[0] == "account_id"]
+    assert len(account_calls) == 1
+    assert set(account_calls[0][1]) == active
 
 
 @pytest.mark.asyncio
