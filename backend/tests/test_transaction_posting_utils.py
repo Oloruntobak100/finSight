@@ -53,6 +53,30 @@ def test_nip_credit_is_income():
     assert kind == "income"
 
 
+def test_transfer_in_category_nip_credit_is_income():
+    kind = detect_posting_kind(
+        {
+            "transaction_type": "credit",
+            "category": "Transfer In",
+            "merchant_name": "Ibrahim Musa",
+            "description": "Received from Ibrahim Musa (NIP)",
+        }
+    )
+    assert kind == "income"
+
+
+def test_transfer_out_category_nip_debit_is_expense():
+    kind = detect_posting_kind(
+        {
+            "transaction_type": "debit",
+            "category": "Transfer Out",
+            "merchant_name": "Ikedc Prepaid",
+            "description": "Sent to Ikedc Prepaid via Access (NIP)",
+        }
+    )
+    assert kind == "expense"
+
+
 def test_internal_transfer_still_detected():
     kind = detect_posting_kind(
         {

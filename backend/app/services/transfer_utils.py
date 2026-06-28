@@ -4,15 +4,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-# Explicit FinSight / Mono categories reserved for account-to-account movement.
-TRANSFER_CATEGORIES = frozenset(
-    {
-        "transfer",
-        "transfer in",
-        "transfer out",
-    }
-)
-
 # Narration markers for moving money between the user's own accounts (Non-P&L).
 INTERNAL_TRANSFER_MARKERS = (
     "to self",
@@ -32,11 +23,11 @@ def is_transfer(
     merchant_name: str | None = None,
     description: str | None = None,
 ) -> bool:
-    """True only for inter-account movement, not routine NIP payments to third parties."""
-    cat = (category or "").strip().lower().replace("_", " ")
-    if cat in TRANSFER_CATEGORIES:
-        return True
+    """True only for inter-account movement, not routine NIP payments to third parties.
 
+    Stored categories like Transfer In/Out are not sufficient — Nigerian banks label
+    most NIP payments that way even when they are normal income or expense.
+    """
     text = " ".join(filter(None, [merchant_name, description])).lower()
     if not text:
         return False

@@ -1,5 +1,7 @@
 from typing import Any
 
+from app.services.transfer_utils import INTERNAL_TRANSFER_MARKERS
+
 MONO_CATEGORY_LABELS: dict[str, str] = {
     "betting_payout": "Betting Payout",
     "betting_deposit": "Betting Deposit",
@@ -124,6 +126,21 @@ def _default_category_for_payment_rail(txn_type: str | None) -> str:
     return "Online Payments"
 
 
+def _remap_generic_transfer_category(
+    category: str,
+    rule_text: str,
+    txn_type: str | None,
+) -> str:
+    """Mono/bank 'transfer' labels on NIP payments are usually P&L, not inter-account."""
+    normalized = category.strip().lower().replace("_", " ")
+    if normalized not in ("transfer", "transfer in", "transfer out"):
+        return category
+    lower = rule_text.lower()
+    if any(marker in lower for marker in INTERNAL_TRANSFER_MARKERS):
+        return category
+    return _default_category_for_payment_rail(txn_type)
+
+
 def format_mono_category(slug: str | None) -> str | None:
     if not slug:
         return None
@@ -182,6 +199,11 @@ def _apply_transfer_direction(category: str, txn_type: str | None) -> str:
     return "Transfer In" if txn_type == "credit" else "Transfer Out"
 
 
+def _finalize_category(category: str, rule_text: str, txn_type: str | None) -> str:
+    remapped = _remap_generic_transfer_category(category, rule_text, txn_type)
+    return _apply_transfer_direction(remapped, txn_type)
+
+
 def resolve_mono_transaction_category(
     txn: dict,
     user_rules: dict[str, str] | None = None,
@@ -198,24 +220,24 @@ def resolve_mono_transaction_category(
     if user_rules and rule_text:
         matched = _apply_user_rules(rule_text, user_rules)
         if matched:
-            return _apply_transfer_direction(matched, txn_type)
+            return _finalize_category(matched, rule_text, txn_type)
 
     mono_slug = metadata.get("category") or txn.get("category")
     formatted = format_mono_category(mono_slug if isinstance(mono_slug, str) else None)
     if formatted:
-        return _apply_transfer_direction(formatted, txn_type)
+        return _finalize_category(formatted, rule_text, txn_type)
 
     if payee_text:
         matched = categorize_merchant(payee_text, user_rules)
         if matched != "Uncategorized":
-            return matched
+            return _finalize_category(matched, rule_text, txn_type)
 
     if reason_text:
         matched = _apply_narration_rules(reason_text)
         if matched:
-            return _apply_transfer_direction(matched, txn_type)
+            return _finalize_category(matched, rule_text, txn_type)
 
     matched = categorize_merchant(narration or None, user_rules)
     if matched == "Uncategorized" and narration and _looks_like_payment_rail(narration):
         matched = _default_category_for_payment_rail(txn_type)
-    return _apply_transfer_direction(matched, txn_type)
+    return _finalize_category(matched, rule_text, txn_type)

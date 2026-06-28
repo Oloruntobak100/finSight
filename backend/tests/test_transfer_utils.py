@@ -19,8 +19,8 @@ def test_nip_debit_to_vendor_is_not_transfer():
     )
 
 
-def test_transfer_category_is_transfer():
-    assert is_transfer("Transfer Out", "Kuda", "Payment")
+def test_transfer_category_without_internal_marker_is_not_transfer():
+    assert not is_transfer("Transfer Out", "Kuda", "Payment")
 
 
 def test_internal_transfer_marker():
@@ -32,4 +32,4 @@ def test_internal_transfer_marker():
 
 
 def test_legacy_transfer_category_without_nip():
-    assert is_transfer("Transfer", "John", "")
+    assert not is_transfer("Transfer", "John", "")

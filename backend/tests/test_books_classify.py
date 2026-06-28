@@ -340,6 +340,28 @@ def test_nip_credit_is_income_not_excluded():
     assert result["qb_posting_type"] == "deposit"
 
 
+def test_transfer_in_category_nip_credit_not_excluded():
+    txn = {
+        "account_id": "bank-1",
+        "category": "Transfer In",
+        "merchant_name": "Ibrahim Musa",
+        "description": "Received from Ibrahim Musa (NIP)",
+        "transaction_type": "credit",
+    }
+    mappings = [
+        {
+            "mapping_type": "bank_account",
+            "finsight_key": "bank-1",
+            "qb_account_id": "35",
+            "qb_account_name": "Checking",
+        },
+    ]
+    coa = _coa(("35", "Checking", "Bank"))
+    result = classify_transaction(txn, mappings, {}, coa, _coa_ids("35"))
+    assert result["qb_sync_status"] != "excluded"
+    assert result["qb_posting_type"] == "deposit"
+
+
 def test_nip_debit_to_landlord_is_expense_not_excluded():
     txn = {
         "account_id": "bank-1",

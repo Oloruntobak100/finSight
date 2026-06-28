@@ -14,7 +14,7 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.database import get_supabase, run_db
-from app.services.categorization_service import load_user_category_rules
+from app.services.categorization_service import load_user_category_rules, resolve_mono_transaction_category
 from app.services.fingerprint_service import (
     FINGERPRINT_MATCH_MIN,
     _decisions_for_fingerprint,
@@ -84,6 +84,18 @@ def _apply_books_account_filter(query: Any, active_bank_ids: set[str]) -> Any:
 
 async def _active_bank_accounts(user_id: str) -> tuple[list[dict[str, Any]], set[str]]:
     return await get_active_bank_accounts(user_id)
+
+
+def _refreshed_category(txn: dict[str, Any], user_rules: dict[str, str]) -> str | None:
+    raw = txn.get("raw_metadata") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    meta_txn: dict[str, Any] = {**raw, "metadata": dict(raw.get("metadata") or {})}
+    narration = txn.get("description") or raw.get("narration") or meta_txn.get("narration")
+    if narration:
+        meta_txn["narration"] = narration
+    cat = resolve_mono_transaction_category(meta_txn, user_rules, txn.get("transaction_type"))
+    return cat if cat != "Uncategorized" else None
 
 
 def _auto_detect_reason(txn: dict[str, Any], kind: PostingKind) -> str:
@@ -652,7 +664,8 @@ async def _classify_transactions_batch(
             fp_conf = float(fingerprint_row.get("confidence") or 0)
             stored_kind = fingerprint_row.get("posting_kind")
             if fp_conf >= CONFIDENCE_FINGERPRINT_MIN and stored_kind:
-                learned_kind = stored_kind  # type: ignore[assignment]
+                if not (allow_reclassify and stored_kind == "transfer"):
+                    learned_kind = stored_kind  # type: ignore[assignment]
 
         kind = detect_posting_kind(txn, learned_kind=learned_kind)
         if kind in ("transfer", "reversal", "balance_sheet"):
@@ -718,6 +731,10 @@ async def _classify_transactions_batch(
             llm_result=llm_result,
             automation=automation,
         )
+        if allow_reclassify:
+            new_cat = _refreshed_category(txn, user_rules)
+            if new_cat:
+                update["category"] = new_cat
         await run_db(
             lambda t=txn["id"], u=update: sb.table("transactions")
             .update(u)
