@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
-import re
-
 import pandas as pd
 
-TRANSFER_CATEGORY_MARKERS = (
-    "transfer",
-    "transfer in",
-    "transfer out",
-    "transfer_in",
-    "transfer_out",
+# Explicit FinSight / Mono categories reserved for account-to-account movement.
+TRANSFER_CATEGORIES = frozenset(
+    {
+        "transfer",
+        "transfer in",
+        "transfer out",
+    }
+)
+
+# Narration markers for moving money between the user's own accounts (Non-P&L).
+INTERNAL_TRANSFER_MARKERS = (
+    "to self",
+    "own account",
+    "between own accounts",
+    "between my accounts",
+    "inter account",
+    "inter-account",
+    "self transfer",
+    "transfer to self",
+    "transfer from self",
 )
 
 
@@ -20,19 +32,16 @@ def is_transfer(
     merchant_name: str | None = None,
     description: str | None = None,
 ) -> bool:
+    """True only for inter-account movement, not routine NIP payments to third parties."""
     cat = (category or "").strip().lower().replace("_", " ")
-    if any(marker in cat for marker in TRANSFER_CATEGORY_MARKERS):
+    if cat in TRANSFER_CATEGORIES:
         return True
 
     text = " ".join(filter(None, [merchant_name, description])).lower()
     if not text:
         return False
 
-    if re.search(r"\bnip[/\s]", text) or text.startswith("nip/"):
-        return True
-    if re.search(r"\b(transfer|trf)\b", text) and "/" in text:
-        return True
-    return False
+    return any(marker in text for marker in INTERNAL_TRANSFER_MARKERS)
 
 
 def mark_transfers_df(df: pd.DataFrame) -> pd.DataFrame:

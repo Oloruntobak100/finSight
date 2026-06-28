@@ -29,13 +29,37 @@ def test_credit_salary_is_income():
     assert kind == "income"
 
 
-def test_nip_debit_is_transfer():
+def test_nip_debit_is_expense():
     kind = detect_posting_kind(
         {
             "transaction_type": "debit",
             "merchant_name": "NIP/John",
-            "description": "",
-            "category": "Transfer",
+            "description": "Sent to John via NIP",
+            "category": "Online Payments",
+        }
+    )
+    assert kind == "expense"
+
+
+def test_nip_credit_is_income():
+    kind = detect_posting_kind(
+        {
+            "transaction_type": "credit",
+            "merchant_name": "Adebayo Tunde",
+            "description": "Received from Adebayo Tunde (NIP)",
+            "category": "Other Income",
+        }
+    )
+    assert kind == "income"
+
+
+def test_internal_transfer_still_detected():
+    kind = detect_posting_kind(
+        {
+            "transaction_type": "debit",
+            "merchant_name": "Kuda",
+            "description": "Transfer to own account",
+            "category": "Transfer Out",
         }
     )
     assert kind == "transfer"

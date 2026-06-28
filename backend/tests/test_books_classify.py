@@ -19,8 +19,8 @@ def test_transfer_excluded():
     txn = {
         "account_id": "bank-1",
         "category": "Transfer Out",
-        "merchant_name": "NIP/John",
-        "description": "",
+        "merchant_name": "Kuda",
+        "description": "Transfer to own account",
         "transaction_type": "debit",
     }
     mappings = [
@@ -317,17 +317,46 @@ def test_refund_uses_expense_coa_path():
 
 
 
-def test_transfer_auto_detect_reason():
+def test_nip_credit_is_income_not_excluded():
     txn = {
         "account_id": "bank-1",
-        "category": "Transfer In",
+        "category": "Other Income",
         "merchant_name": "Samuel Olamide",
         "description": "Received from Samuel Olamide via Kuda (NIP)",
         "transaction_type": "credit",
-        "raw_metadata": {"narration": "NIP/Kuda/Samuel Olamide/Transfer", "metadata": {"channel": "NIP"}},
+        "raw_metadata": {"narration": "NIP/Kuda/Samuel Olamide/Payment", "metadata": {"channel": "NIP"}},
     }
-    result = classify_transaction(txn, [], {}, _coa(), _coa_ids())
-    assert result["qb_sync_status"] == "excluded"
-    assert result["qb_suggestion_method"] == "auto_detect"
-    assert "Transfer In" in (result["qb_confidence_reason"] or "")
-    assert "NIP" in (result["qb_confidence_reason"] or "")
+    mappings = [
+        {
+            "mapping_type": "bank_account",
+            "finsight_key": "bank-1",
+            "qb_account_id": "35",
+            "qb_account_name": "Checking",
+        },
+    ]
+    coa = _coa(("35", "Checking", "Bank"))
+    result = classify_transaction(txn, mappings, {}, coa, _coa_ids("35"))
+    assert result["qb_sync_status"] != "excluded"
+    assert result["qb_posting_type"] == "deposit"
+
+
+def test_nip_debit_to_landlord_is_expense_not_excluded():
+    txn = {
+        "account_id": "bank-1",
+        "category": "Rent & Maintenance",
+        "merchant_name": "Landlord Properties Ltd",
+        "description": "Sent to Landlord Properties Ltd (NIP)",
+        "transaction_type": "debit",
+    }
+    mappings = [
+        {
+            "mapping_type": "bank_account",
+            "finsight_key": "bank-1",
+            "qb_account_id": "35",
+            "qb_account_name": "Checking",
+        },
+    ]
+    coa = _coa(("35", "Checking", "Bank"))
+    result = classify_transaction(txn, mappings, {}, coa, _coa_ids("35"))
+    assert result["qb_sync_status"] != "excluded"
+    assert result["qb_posting_type"] == "expense"

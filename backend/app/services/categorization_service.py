@@ -58,7 +58,20 @@ MERCHANT_RULES: dict[str, str] = {
 NARRATION_RULES: list[tuple[tuple[str, ...], str]] = [
     (("salary", "payroll", "wages"), "Salary"),
     (("airtime", "data bundle", "mtn", "glo", "airtel", "9mobile"), "Phone & Internet"),
-    (("nip/", "nip ", "transfer", "trf", "kuda", "opay", "palmpay"), "Transfer"),
+    (
+        (
+            "to self",
+            "own account",
+            "between own accounts",
+            "between my accounts",
+            "inter account",
+            "inter-account",
+            "self transfer",
+            "transfer to self",
+            "transfer from self",
+        ),
+        "Transfer",
+    ),
     (("pos ", "pos/", "pos purchase"), "Shopping"),
     (("uber", "bolt", "indrive", "taxify"), "Transport"),
     (("netflix", "spotify", "youtube", "cinema"), "Entertainment"),
@@ -87,6 +100,28 @@ def _apply_narration_rules(text: str) -> str | None:
         if any(p in lower for p in patterns):
             return category
     return None
+
+
+def _looks_like_payment_rail(text: str) -> bool:
+    lower = text.lower()
+    return any(
+        marker in lower
+        for marker in (
+            "nip/",
+            "nip ",
+            "(nip)",
+            " via kuda",
+            " via opay",
+            " via palmpay",
+            " via moniepoint",
+        )
+    )
+
+
+def _default_category_for_payment_rail(txn_type: str | None) -> str:
+    if txn_type == "credit":
+        return "Other Income"
+    return "Online Payments"
 
 
 def format_mono_category(slug: str | None) -> str | None:
@@ -181,4 +216,6 @@ def resolve_mono_transaction_category(
             return _apply_transfer_direction(matched, txn_type)
 
     matched = categorize_merchant(narration or None, user_rules)
+    if matched == "Uncategorized" and narration and _looks_like_payment_rail(narration):
+        matched = _default_category_for_payment_rail(txn_type)
     return _apply_transfer_direction(matched, txn_type)

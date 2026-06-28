@@ -41,8 +41,6 @@ from app.services.transaction_posting_utils import (
     posting_kind_to_intent,
     posting_type_for_kind,
 )
-from app.services.transfer_utils import is_transfer
-
 from app.services.bank_transaction_scope import (
     BANK_PROVIDERS,
     apply_active_bank_scope,
@@ -593,6 +591,28 @@ async def _fetch_unclassified_batch(
     return res.data or []
 
 
+async def _fetch_misclassified_transfer_batch(
+    user_id: str,
+    active_bank_ids: set[str],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Excluded auto-detected transfers that may need reclassification after rule changes."""
+    sb = get_supabase()
+    query = (
+        sb.table("transactions")
+        .select("*")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+        .eq("qb_sync_status", "excluded")
+        .eq("qb_suggestion_method", "auto_detect")
+        .eq("qb_posting_type", "transfer")
+    )
+    query = _apply_books_account_filter(query, active_bank_ids)
+    res = await run_db(lambda: query.limit(limit).execute())
+    return res.data or []
+
+
 async def _classify_transactions_batch(
     user_id: str,
     txns: list[dict[str, Any]],
@@ -645,6 +665,12 @@ async def _classify_transactions_batch(
                 learned_kind=learned_kind,
                 automation=automation,
             )
+            if (
+                allow_reclassify
+                and txn.get("qb_sync_status") == update.get("qb_sync_status") == "excluded"
+                and txn.get("qb_posting_type") == update.get("qb_posting_type")
+            ):
+                continue
             await run_db(
                 lambda t=txn["id"], u=update: sb.table("transactions")
                 .update(u)
@@ -762,6 +788,27 @@ async def classify_user_transactions(
             )
             total_classified += batch_count
             if len(txns) < CLASSIFY_BATCH_SIZE:
+                break
+
+        while total_classified < CLASSIFY_MAX_ROWS:
+            txns = await _fetch_misclassified_transfer_batch(
+                user_id, active_bank_ids, limit=CLASSIFY_BATCH_SIZE
+            )
+            if not txns:
+                break
+            batch_count = await _classify_transactions_batch(
+                user_id,
+                txns,
+                mappings=mappings,
+                user_rules=user_rules,
+                coa=coa,
+                coa_ids=coa_ids,
+                automation=automation,
+                active_bank_ids=active_bank_ids,
+                allow_reclassify=True,
+            )
+            total_classified += batch_count
+            if batch_count == 0 or len(txns) < CLASSIFY_BATCH_SIZE:
                 break
 
     remaining = await _count_unclassified_transactions(user_id, active_bank_ids)
