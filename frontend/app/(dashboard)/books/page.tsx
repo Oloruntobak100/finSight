@@ -436,6 +436,9 @@ function BooksQueueContent() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [classifying, setClassifying] = useState(false);
+  const [syncingQb, setSyncingQb] = useState(false);
+  const lastQbSyncRef = useRef(0);
+  const QB_SYNC_STALE_MS = 2 * 60 * 1000;
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
@@ -485,6 +488,50 @@ function BooksQueueContent() {
       setClassifyProgress(null);
     }
   }, [status, page, refreshQueue]);
+
+  const syncBooksFromQuickBooks = useCallback(
+    async (opts?: { parties?: boolean }) => {
+      const syncParties = opts?.parties ?? (status === "pending" || status === "needs_review");
+      const coa = await listCoa(undefined, true);
+      setPostingCoaGroups(buildPostingCoaGroups(coa.items));
+      setFlatCoa(coa.items);
+
+      if (syncParties) {
+        try {
+          const parties = await listQbParties(true);
+          setQbVendors(parties.vendors);
+          setQbCustomers(parties.customers);
+        } catch {
+          try {
+            const cached = await listQbParties(false);
+            setQbVendors(cached.vendors);
+            setQbCustomers(cached.customers);
+          } catch {
+            /* vendors/customers optional until sync succeeds */
+          }
+        }
+      }
+
+      lastQbSyncRef.current = Date.now();
+      return coa;
+    },
+    [status]
+  );
+
+  const handleSyncFromQuickBooks = useCallback(async () => {
+    setSyncingQb(true);
+    setError(null);
+    setInfo(null);
+    try {
+      await syncBooksFromQuickBooks();
+      await refreshQueue(status, page);
+      setInfo("Synced accounts from QuickBooks");
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "QuickBooks sync failed");
+    } finally {
+      setSyncingQb(false);
+    }
+  }, [syncBooksFromQuickBooks, refreshQueue, status, page]);
 
   const refreshData = useCallback(
     async (opts?: { classify?: boolean }) => {
@@ -538,6 +585,7 @@ function BooksQueueContent() {
 
         setPostingCoaGroups(buildPostingCoaGroups(coa.items));
         setFlatCoa(coa.items);
+        lastQbSyncRef.current = Date.now();
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
@@ -592,31 +640,36 @@ function BooksQueueContent() {
     if (status !== "pending" && status !== "needs_review") return;
 
     let cancelled = false;
-    async function loadParties() {
+    async function loadQuickBooksData() {
       try {
-        const parties = await listQbParties(true);
-        if (!cancelled) {
-          setQbVendors(parties.vendors);
-          setQbCustomers(parties.customers);
-        }
+        await syncBooksFromQuickBooks({ parties: true });
       } catch {
-        try {
-          const cached = await listQbParties(false);
-          if (!cancelled) {
-            setQbVendors(cached.vendors);
-            setQbCustomers(cached.customers);
-          }
-        } catch {
-          /* QBO payee column stays empty until sync succeeds */
+        if (!cancelled) {
+          /* keep cached COA if live sync fails */
         }
       }
     }
 
-    void loadParties();
+    void loadQuickBooksData();
     return () => {
       cancelled = true;
     };
-  }, [bootstrapped, qbConnected, status]);
+  }, [bootstrapped, qbConnected, status, syncBooksFromQuickBooks]);
+
+  useEffect(() => {
+    if (!bootstrapped || !qbConnected) return;
+
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastQbSyncRef.current < QB_SYNC_STALE_MS) return;
+      void syncBooksFromQuickBooks({
+        parties: status === "pending" || status === "needs_review",
+      }).catch(() => undefined);
+    };
+
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [bootstrapped, qbConnected, status, syncBooksFromQuickBooks]);
 
   useEffect(() => {
     setOpenActionMenuId(null);
@@ -978,17 +1031,29 @@ function BooksQueueContent() {
             )}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => refreshData({ classify: true })}
-          loading={classifying}
-          loadingLabel="Classifying…"
-          className="shrink-0 text-slate-300"
-        >
-          <RefreshCw className="mr-1 h-3.5 w-3.5" />
-          Refresh
-        </Button>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleSyncFromQuickBooks()}
+            loading={syncingQb}
+            loadingLabel="Syncing…"
+            className="text-slate-300"
+          >
+            <RefreshCw className="mr-1 h-3.5 w-3.5" />
+            Sync from QuickBooks
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refreshData({ classify: true })}
+            loading={classifying}
+            loadingLabel="Classifying…"
+            className="text-slate-300"
+          >
+            Re-classify
+          </Button>
+        </div>
       </div>
 
       {error && (
