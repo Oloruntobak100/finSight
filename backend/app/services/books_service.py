@@ -25,6 +25,11 @@ from app.services.fingerprint_service import (
     touch_fingerprint_seen,
     upsert_fingerprint_from_decision,
 )
+from app.services.qb_party_service import (
+    entity_ref_for_txn,
+    txn_doc_number,
+    validate_party,
+)
 from app.services.posting_rag_service import (
     rag_classify_hint,
     store_posting_memory,
@@ -1115,6 +1120,8 @@ async def approve_transaction(
     post: bool = False,
     payment_account_id: str | None = None,
     propagate_similar: bool = True,
+    final_party_id: str | None = None,
+    final_party_type: str | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
     txn_res = await run_db(
@@ -1168,12 +1175,22 @@ async def approve_transaction(
         label="Payment bank account",
     )
 
+    party_id: str | None = None
+    party_name: str | None = None
+    party_type: str | None = None
+    if final_party_id and final_party_type:
+        party_id, party_name = await validate_party(user_id, final_party_id, final_party_type)  # type: ignore[arg-type]
+        party_type = final_party_type
+
     fp_row = await upsert_fingerprint_from_decision(
         user_id,
         txn,
         final_account_id,
         final_name,
         posting_kind=approved_kind,
+        qb_party_id=party_id,
+        qb_party_type=party_type,
+        qb_party_name=party_name,
     )
 
     decision = await log_posting_decision(
@@ -1225,7 +1242,12 @@ async def approve_transaction(
         ),
         "qb_suggestion_method": "manual",
         "qb_sync_status": "pending",
+        "qb_doc_number": txn_doc_number(txn),
     }
+    if final_party_id is not None or final_party_type is not None:
+        update["qb_party_id"] = party_id
+        update["qb_party_type"] = party_type
+        update["qb_party_name"] = party_name
     await run_db(
         lambda: sb.table("transactions").update(update).eq("id", transaction_id).execute()
     )
@@ -1262,10 +1284,18 @@ async def approve_transactions_bulk(
     final_account_id: str | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
-    work: list[tuple[str, str]] = []
+    work: list[dict[str, str | None]] = []
 
     if items:
-        work = [(str(i["transaction_id"]), str(i["final_account_id"])) for i in items]
+        work = [
+            {
+                "transaction_id": str(i["transaction_id"]),
+                "final_account_id": str(i["final_account_id"]),
+                "final_party_id": i.get("final_party_id"),
+                "final_party_type": i.get("final_party_type"),
+            }
+            for i in items
+        ]
     elif payee_pattern:
         res = await run_db(
             lambda: sb.table("transactions")
@@ -1279,14 +1309,20 @@ async def approve_transactions_bulk(
             final_account_id = res.data[0].get("qb_account_id")
         if not final_account_id:
             raise ValueError("final_account_id required for bulk approve")
-        work = [(r["id"], final_account_id) for r in (res.data or [])]
+        work = [
+            {"transaction_id": r["id"], "final_account_id": final_account_id, "final_party_id": None, "final_party_type": None}
+            for r in (res.data or [])
+        ]
     elif transaction_ids and final_account_id:
-        work = [(tid, final_account_id) for tid in transaction_ids]
+        work = [
+            {"transaction_id": tid, "final_account_id": final_account_id, "final_party_id": None, "final_party_type": None}
+            for tid in transaction_ids
+        ]
 
     if not work:
         return {"approved": 0, "failed": 0, "similar_updated": 0, "errors": []}
 
-    account_ids = {acct for _, acct in work}
+    account_ids = {str(item["final_account_id"]) for item in work}
     await _coa_validated_for_accounts(user_id, *account_ids)
 
     approved = 0
@@ -1295,7 +1331,9 @@ async def approve_transactions_bulk(
     propagated_payees: set[str] = set()
     approved_ids: set[str] = set()
 
-    for tid, acct_id in work:
+    for item in work:
+        tid = str(item["transaction_id"])
+        acct_id = str(item["final_account_id"])
         try:
             await approve_transaction(
                 user_id,
@@ -1303,6 +1341,8 @@ async def approve_transactions_bulk(
                 acct_id,
                 post=post,
                 propagate_similar=False,
+                final_party_id=item.get("final_party_id"),
+                final_party_type=item.get("final_party_type"),
             )
             approved += 1
             approved_ids.add(tid)
@@ -1310,7 +1350,8 @@ async def approve_transactions_bulk(
             errors.append({"transaction_id": tid, "error": str(exc)})
 
     failed_ids = {e["transaction_id"] for e in errors}
-    for tid, _ in work:
+    for item in work:
+        tid = str(item["transaction_id"])
         if tid in failed_ids:
             continue
         txn_res = await run_db(
@@ -1396,11 +1437,21 @@ async def reject_suggestion(user_id: str, transaction_id: str) -> dict[str, Any]
     return {"rejected": True, "transaction_id": transaction_id}
 
 
+def _apply_entity_and_doc(payload: dict[str, Any], txn: dict[str, Any]) -> dict[str, Any]:
+    entity = entity_ref_for_txn(txn)
+    if entity:
+        payload["EntityRef"] = entity
+    doc = txn.get("qb_doc_number") or txn_doc_number(txn)
+    if doc:
+        payload["DocNumber"] = doc
+    return payload
+
+
 def _build_deposit_payload(txn: dict[str, Any]) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
     txn_date = str(txn.get("transaction_date"))
     merchant = txn.get("merchant_name") or txn.get("description") or "Deposit"
-    return {
+    payload = {
         "DepositToAccountRef": {"value": str(txn["qb_payment_account_id"])},
         "TxnDate": txn_date,
         "PrivateNote": f"FinSight:{txn['id']}",
@@ -1415,13 +1466,14 @@ def _build_deposit_payload(txn: dict[str, Any]) -> dict[str, Any]:
             }
         ],
     }
+    return _apply_entity_and_doc(payload, txn)
 
 
 def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
     txn_date = str(txn.get("transaction_date"))
     merchant = txn.get("merchant_name") or txn.get("description") or "Expense"
-    return {
+    payload = {
         "PaymentType": "Cash",
         "AccountRef": {"value": str(txn["qb_payment_account_id"])},
         "TxnDate": txn_date,
@@ -1437,6 +1489,7 @@ def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
             }
         ],
     }
+    return _apply_entity_and_doc(payload, txn)
 
 
 def _build_transfer_payload(txn: dict[str, Any]) -> dict[str, Any]:
@@ -1735,7 +1788,7 @@ def _fingerprint_prefill_patch(
 
     row_payee = payee_pattern_for_row(txn)
 
-    return {
+    patch: dict[str, Any] = {
         "qb_account_id": account_id,
         "qb_account_name": fp_row.get("qb_account_name"),
         "qb_payment_account_id": payment_account_id,
@@ -1748,6 +1801,14 @@ def _fingerprint_prefill_patch(
         "posting_intent": posting_kind_to_intent(fp_kind or kind),
         "payee_pattern": row_payee,
     }
+    if fp_row.get("qb_party_id") and fp_row.get("qb_party_type"):
+        patch["qb_party_id"] = fp_row.get("qb_party_id")
+        patch["qb_party_type"] = fp_row.get("qb_party_type")
+        patch["qb_party_name"] = fp_row.get("qb_party_name")
+    doc = txn_doc_number(txn)
+    if doc:
+        patch["qb_doc_number"] = doc
+    return patch
 
 
 async def _schedule_posting_memory(

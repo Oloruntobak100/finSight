@@ -20,6 +20,12 @@ from app.models.books import (
     MappingUpsertRequest,
     PostRequest,
     PostResponse,
+    QbPartyCreateRequest,
+    QbPartyCreateResponse,
+    QbPartyListResponse,
+    QbPartyResponse,
+    QbPartySuggestResponse,
+    QbPartySyncResponse,
     QueueGroupResponse,
     QueueItemResponse,
     QueueListResponse,
@@ -45,7 +51,17 @@ from app.services.books_service import (
     set_posting_intent,
     upsert_mapping as upsert_mapping_service,
 )
+from app.services.qb_party_service import (
+    create_customer,
+    create_vendor,
+    list_customers,
+    list_vendors,
+    qb_party_type_for_posting,
+    suggest_party_for_txn,
+    sync_parties,
+)
 from app.services.quickbooks_service import get_connection_status, sync_chart_of_accounts
+from app.database import get_supabase, run_db
 
 router = APIRouter(prefix="/books", tags=["books"])
 
@@ -88,6 +104,107 @@ async def list_coa(
         for r in rows
     ]
     return CoaListResponse(items=items, total=len(items))
+
+
+def _party_list_response(user_id: str, vendors: list, customers: list) -> QbPartyListResponse:
+    return QbPartyListResponse(
+        vendors=[
+            QbPartyResponse(
+                id=r["id"],
+                qb_party_id=r["qb_vendor_id"],
+                display_name=r["display_name"],
+                party_type="Vendor",
+                active=r.get("active", True),
+            )
+            for r in vendors
+        ],
+        customers=[
+            QbPartyResponse(
+                id=r["id"],
+                qb_party_id=r["qb_customer_id"],
+                display_name=r["display_name"],
+                party_type="Customer",
+                active=r.get("active", True),
+            )
+            for r in customers
+        ],
+    )
+
+
+@router.post("/parties/sync", response_model=QbPartySyncResponse)
+async def sync_qb_parties(user_id: CurrentUser) -> QbPartySyncResponse:
+    await _ensure_qb_connected(user_id)
+    try:
+        result = await sync_parties(user_id)
+        return QbPartySyncResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/parties", response_model=QbPartyListResponse)
+async def list_qb_parties(
+    user_id: CurrentUser,
+    fresh: bool = Query(False, description="Pull latest vendors/customers from QuickBooks first"),
+) -> QbPartyListResponse:
+    if fresh:
+        await _ensure_qb_connected(user_id)
+        await sync_parties(user_id)
+    vendors = await list_vendors(user_id)
+    customers = await list_customers(user_id)
+    return _party_list_response(user_id, vendors, customers)
+
+
+@router.post("/parties", response_model=QbPartyCreateResponse)
+async def create_qb_party(user_id: CurrentUser, body: QbPartyCreateRequest) -> QbPartyCreateResponse:
+    await _ensure_qb_connected(user_id)
+    try:
+        if body.party_type == "Vendor":
+            result = await create_vendor(user_id, body.display_name)
+        else:
+            result = await create_customer(user_id, body.display_name)
+        return QbPartyCreateResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/parties/suggest", response_model=QbPartySuggestResponse)
+async def suggest_qb_party(
+    user_id: CurrentUser,
+    transaction_id: str = Query(...),
+    account_id: str = Query(...),
+) -> QbPartySuggestResponse:
+    await _ensure_qb_connected(user_id)
+    sb = get_supabase()
+    txn_res = await run_db(
+        lambda: sb.table("transactions")
+        .select("*")
+        .eq("id", transaction_id)
+        .eq("user_id", user_id)
+        .single()
+        .execute()
+    )
+    txn = txn_res.data
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    coa = await list_coa_rows(user_id)
+    coa_row = next((r for r in coa if r.get("qb_account_id") == account_id), None)
+    if not coa_row:
+        raise HTTPException(status_code=400, detail="Invalid QuickBooks account")
+
+    party_type = qb_party_type_for_posting(
+        qb_posting_type=txn.get("qb_posting_type"),
+        offset_account_type=coa_row.get("account_type"),
+        transaction_type=txn.get("transaction_type"),
+    )
+    if not party_type:
+        raise HTTPException(status_code=400, detail="No vendor or customer applies to this transaction")
+
+    suggestion = await suggest_party_for_txn(user_id, txn, party_type)
+    if not suggestion:
+        raise HTTPException(status_code=404, detail="No matching vendor or customer found")
+
+    return QbPartySuggestResponse(**suggestion)
 
 
 @router.get("/mappings", response_model=list[MappingResponse])
@@ -164,6 +281,8 @@ async def approve_txn(user_id: CurrentUser, body: ApproveRequest) -> ApproveResp
             body.final_account_id,
             post=body.post,
             payment_account_id=body.payment_account_id,
+            final_party_id=body.final_party_id,
+            final_party_type=body.final_party_type,
         )
         return ApproveResponse(**result)
     except ValueError as exc:
@@ -175,7 +294,15 @@ async def approve_bulk(user_id: CurrentUser, body: BulkApproveRequest) -> BulkAp
     await _ensure_qb_connected(user_id)
     try:
         items = (
-            [{"transaction_id": i.transaction_id, "final_account_id": i.final_account_id} for i in body.items]
+            [
+                {
+                    "transaction_id": i.transaction_id,
+                    "final_account_id": i.final_account_id,
+                    "final_party_id": i.final_party_id,
+                    "final_party_type": i.final_party_type,
+                }
+                for i in body.items
+            ]
             if body.items
             else None
         )

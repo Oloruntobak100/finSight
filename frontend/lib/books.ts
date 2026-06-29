@@ -59,10 +59,24 @@ export interface QueueItem {
   qb_confidence?: number | null;
   qb_suggestion_method?: SuggestionMethod | null;
   qb_confidence_reason?: string | null;
+  qb_party_id?: string | null;
+  qb_party_type?: "Vendor" | "Customer" | null;
+  qb_party_name?: string | null;
   qb_posting_type?: string | null;
   qb_entity_id?: string | null;
+  qb_doc_number?: string | null;
   qb_posted_at?: string | null;
   qb_error?: string | null;
+}
+
+export type QbPartyType = "Vendor" | "Customer";
+
+export interface QbParty {
+  id: string;
+  qb_party_id: string;
+  display_name: string;
+  party_type: QbPartyType;
+  active: boolean;
 }
 
 export interface QueueGroup {
@@ -152,6 +166,30 @@ export async function listCoa(
   return apiFetch(`/books/coa${q}`);
 }
 
+export async function listQbParties(fresh = false): Promise<{ vendors: QbParty[]; customers: QbParty[] }> {
+  const q = fresh ? "?fresh=true" : "";
+  return apiFetch(`/books/parties${q}`);
+}
+
+export async function createQbParty(
+  displayName: string,
+  partyType: QbPartyType
+): Promise<{ qb_party_id: string; qb_party_type: QbPartyType; qb_party_name: string }> {
+  return apiFetch("/books/parties", {
+    method: "POST",
+    body: JSON.stringify({ display_name: displayName, party_type: partyType }),
+    timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
+  });
+}
+
+export async function suggestQbParty(
+  transactionId: string,
+  accountId: string
+): Promise<{ qb_party_id: string; qb_party_type: QbPartyType; qb_party_name?: string; match_score: number }> {
+  const params = new URLSearchParams({ transaction_id: transactionId, account_id: accountId });
+  return apiFetch(`/books/parties/suggest?${params}`);
+}
+
 export async function listMappings(): Promise<AccountMapping[]> {
   return apiFetch("/books/mappings");
 }
@@ -195,7 +233,8 @@ export async function getBooksSummary(): Promise<BooksSummary> {
 export async function approveTransaction(
   transactionId: string,
   finalAccountId: string,
-  post = true
+  post = true,
+  party?: { id: string; type: QbPartyType }
 ): Promise<{ approved: boolean; similar_updated?: number }> {
   return apiFetch("/books/approve", {
     method: "POST",
@@ -203,6 +242,8 @@ export async function approveTransaction(
       transaction_id: transactionId,
       final_account_id: finalAccountId,
       post,
+      final_party_id: party?.id ?? null,
+      final_party_type: party?.type ?? null,
     }),
     timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
   });
@@ -211,6 +252,8 @@ export async function approveTransaction(
 export interface BulkApproveItem {
   transaction_id: string;
   final_account_id: string;
+  final_party_id?: string;
+  final_party_type?: QbPartyType;
 }
 
 export async function approveBulk(body: {

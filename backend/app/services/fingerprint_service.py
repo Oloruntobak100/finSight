@@ -238,6 +238,9 @@ async def upsert_fingerprint_from_decision(
     final_account_name: str | None,
     *,
     posting_kind: str | None = None,
+    qb_party_id: str | None = None,
+    qb_party_type: str | None = None,
+    qb_party_name: str | None = None,
 ) -> dict[str, Any]:
     fp = extract_fingerprint(txn)
     sb = get_supabase()
@@ -250,6 +253,13 @@ async def upsert_fingerprint_from_decision(
     if existing:
         fingerprint_id = existing["id"]
         recurrence = int(existing.get("recurrence_count") or 0) + 1
+        party_patch: dict[str, Any] = {}
+        if qb_party_id and qb_party_type:
+            party_patch = {
+                "qb_party_id": qb_party_id,
+                "qb_party_type": qb_party_type,
+                "qb_party_name": qb_party_name,
+            }
         await run_db(
             lambda: sb.table("transaction_fingerprints")
             .update(
@@ -261,6 +271,7 @@ async def upsert_fingerprint_from_decision(
                     "bank_code": fp.get("bank_code"),
                     "updated_at": now,
                     **({"posting_kind": posting_kind} if posting_kind else {}),
+                    **party_patch,
                 }
             )
             .eq("id", fingerprint_id)
@@ -279,6 +290,9 @@ async def upsert_fingerprint_from_decision(
             "qb_account_name": final_account_name,
             "confidence": 0.0,
             "posting_kind": posting_kind,
+            "qb_party_id": qb_party_id,
+            "qb_party_type": qb_party_type,
+            "qb_party_name": qb_party_name,
         }
         res = await run_db(
             lambda: sb.table("transaction_fingerprints").insert(row).execute()

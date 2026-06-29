@@ -13,17 +13,23 @@ import {
   approveBulk,
   approveTransaction,
   classifyTransactions,
+  createQbParty,
   getAutomationSettings,
   getBooksQueue,
   getBooksSummary,
   getQuickBooksStatus,
   listCoa,
+  listQbParties,
   postTransaction,
   revertTransaction,
+  suggestQbParty,
   syncCoa,
   type AutomationSettings,
   type BooksReadiness,
+  type BulkApproveItem,
   type CoaAccount,
+  type QbParty,
+  type QbPartyType,
   type QbSyncStatus,
   type QueueItem,
   type RevertTarget,
@@ -103,6 +109,44 @@ function buildPostingCoaGroups(accounts: CoaAccount[]): CoaGroup[] {
 
 function hasPostingAccounts(groups: CoaGroup[]): boolean {
   return groups.some((g) => g.items.length > 0);
+}
+
+function flattenCoaGroups(groups: CoaGroup[]): CoaAccount[] {
+  return groups.flatMap((g) => g.items);
+}
+
+function partyTypeForAccount(
+  row: QueueItem,
+  accountId: string | undefined,
+  accounts: CoaAccount[]
+): QbPartyType | null {
+  if (!accountId) return null;
+  const acct = accounts.find((a) => a.qb_account_id === accountId);
+  if (!acct?.account_type) return null;
+  const at = acct.account_type.toLowerCase();
+  const pt = (row.qb_posting_type || "").toLowerCase();
+  if (pt === "transfer" || pt === "balance_sheet") return null;
+  if (pt === "expense" || pt === "fee" || pt === "refund") return "Vendor";
+  if (pt === "deposit" && (at === "income" || at === "other income")) return "Customer";
+  if (
+    row.transaction_type === "debit" &&
+    (at === "expense" || at === "other expense" || at === "cost of goods sold")
+  ) {
+    return "Vendor";
+  }
+  if (row.transaction_type === "credit" && (at === "income" || at === "other income")) {
+    return "Customer";
+  }
+  return null;
+}
+
+function defaultPartyDisplayName(row: QueueItem): string {
+  const raw = (row.payee_pattern || row.merchant_name || row.description || "Payee").trim();
+  return raw
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ")
+    .slice(0, 100);
 }
 
 const selectClass =
@@ -247,7 +291,13 @@ function BooksQueueContent() {
   const [readiness, setReadiness] = useState<BooksReadiness | null>(null);
   const [items, setItems] = useState<QueueItem[]>([]);
   const [postingCoaGroups, setPostingCoaGroups] = useState<CoaGroup[]>([]);
+  const [flatCoa, setFlatCoa] = useState<CoaAccount[]>([]);
+  const [qbVendors, setQbVendors] = useState<QbParty[]>([]);
+  const [qbCustomers, setQbCustomers] = useState<QbParty[]>([]);
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
+  const [partyEdits, setPartyEdits] = useState<Record<string, string>>({});
+  const [creatingPartyId, setCreatingPartyId] = useState<string | null>(null);
+  const partySuggestedRef = useRef<Set<string>>(new Set());
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [coverage, setCoverage] = useState<{ total_bank_transactions: number; classified: number; unclassified: number } | null>(null);
@@ -267,7 +317,7 @@ function BooksQueueContent() {
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
-    6 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
+    7 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
 
   const refreshQueue = useCallback(
     async (statusFilter: QbSyncStatus, pageNum: number) => {
@@ -357,14 +407,18 @@ function BooksQueueContent() {
 
         if (!sum.readiness?.bank_connected) return;
 
-        const [coa, auto, queue] = await Promise.all([
+        const [coa, auto, queue, parties] = await Promise.all([
           listCoa(undefined, true),
           sum.automation ? Promise.resolve(null) : getAutomationSettings(),
           getBooksQueue(status, page, 20),
+          listQbParties(true),
         ]);
         if (cancelled) return;
 
         setPostingCoaGroups(buildPostingCoaGroups(coa.items));
+        setFlatCoa(coa.items);
+        setQbVendors(parties.vendors);
+        setQbCustomers(parties.customers);
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
@@ -417,11 +471,79 @@ function BooksQueueContent() {
   useEffect(() => {
     setOpenActionMenuId(null);
     setSelected(new Set());
+    partySuggestedRef.current.clear();
   }, [status, page]);
+
+  useEffect(() => {
+    if ((status !== "pending" && status !== "needs_review") || flatCoa.length === 0) return;
+    for (const row of items) {
+      const accountId = accountEdits[row.id] ?? row.qb_account_id ?? "";
+      if (!accountId || partyEdits[row.id] || row.qb_party_id) continue;
+      void maybeSuggestParty(row, accountId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, flatCoa, status]);
 
   function resolveAccountId(row: QueueItem): string | undefined {
     const id = accountEdits[row.id] ?? row.qb_account_id ?? "";
     return id || undefined;
+  }
+
+  function resolvePartyId(row: QueueItem): string | undefined {
+    const id = partyEdits[row.id] ?? row.qb_party_id ?? "";
+    return id || undefined;
+  }
+
+  async function maybeSuggestParty(row: QueueItem, accountId: string) {
+    const partyType = partyTypeForAccount(row, accountId, flatCoa);
+    if (!partyType) return;
+    if (partyEdits[row.id] || row.qb_party_id) return;
+    const key = `${row.id}:${accountId}`;
+    if (partySuggestedRef.current.has(key)) return;
+    partySuggestedRef.current.add(key);
+    try {
+      const suggestion = await suggestQbParty(row.id, accountId);
+      setPartyEdits((prev) => ({ ...prev, [row.id]: suggestion.qb_party_id }));
+    } catch {
+      /* no QB match — user can create or pick manually */
+    }
+  }
+
+  async function handleCreateParty(row: QueueItem) {
+    const accountId = resolveAccountId(row);
+    if (!accountId) {
+      setError("Select a QuickBooks account first");
+      return;
+    }
+    const partyType = partyTypeForAccount(row, accountId, flatCoa);
+    if (!partyType) return;
+
+    setCreatingPartyId(row.id);
+    setError(null);
+    try {
+      const created = await createQbParty(defaultPartyDisplayName(row), partyType);
+      const entry: QbParty = {
+        id: created.qb_party_id,
+        qb_party_id: created.qb_party_id,
+        display_name: created.qb_party_name,
+        party_type: partyType,
+        active: true,
+      };
+      if (partyType === "Vendor") {
+        setQbVendors((prev) =>
+          [...prev, entry].sort((a, b) => a.display_name.localeCompare(b.display_name))
+        );
+      } else {
+        setQbCustomers((prev) =>
+          [...prev, entry].sort((a, b) => a.display_name.localeCompare(b.display_name))
+        );
+      }
+      setPartyEdits((prev) => ({ ...prev, [row.id]: created.qb_party_id }));
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to create in QuickBooks");
+    } finally {
+      setCreatingPartyId(null);
+    }
   }
 
   function selectedRows(): QueueItem[] {
@@ -445,13 +567,21 @@ function BooksQueueContent() {
     setSelected(new Set(items.map((r) => r.id)));
   }
 
-  function buildBulkItems(): { transaction_id: string; final_account_id: string }[] {
+  function buildBulkItems(): BulkApproveItem[] {
     return selectedRows()
       .map((row) => {
         const final_account_id = resolveAccountId(row);
-        return final_account_id ? { transaction_id: row.id, final_account_id } : null;
+        if (!final_account_id) return null;
+        const item: BulkApproveItem = { transaction_id: row.id, final_account_id };
+        const partyType = partyTypeForAccount(row, final_account_id, flatCoa);
+        const partyId = resolvePartyId(row);
+        if (partyType && partyId) {
+          item.final_party_id = partyId;
+          item.final_party_type = partyType;
+        }
+        return item;
       })
-      .filter((item): item is { transaction_id: string; final_account_id: string } => item !== null);
+      .filter((item): item is BulkApproveItem => item !== null);
   }
 
   async function handleBulkApprove(post: boolean) {
@@ -492,6 +622,8 @@ function BooksQueueContent() {
 
       setSelected(new Set());
       setAccountEdits({});
+      setPartyEdits({});
+      partySuggestedRef.current.clear();
       await refreshData();
     } catch (e) {
       setInfo(null);
@@ -514,7 +646,11 @@ function BooksQueueContent() {
     setError(null);
     setInfo(post ? "Posting to QuickBooks…" : "Saving training…");
     try {
-      const result = await approveTransaction(row.id, accountId, post);
+      const partyType = partyTypeForAccount(row, accountId, flatCoa);
+      const partyId = resolvePartyId(row);
+      const party =
+        partyType && partyId ? { id: partyId, type: partyType as QbPartyType } : undefined;
+      await approveTransaction(row.id, accountId, post, party);
       if (post) {
         setInfo("Posted to QuickBooks");
       } else {
@@ -848,6 +984,7 @@ function BooksQueueContent() {
               <th className="px-2 py-2">Payee</th>
               <th className="px-2 py-2">Kind</th>
               <th className="px-2 py-2">QB Account</th>
+              <th className="px-2 py-2">QBO Payee</th>
               <th className="px-2 py-2 text-right">Amount</th>
               <th className="px-2 py-2">Actions</th>
             </tr>
@@ -870,6 +1007,9 @@ function BooksQueueContent() {
                 const kind = kindLabel(row);
                 const rowBusy = actionLoading === row.id;
                 const rowSelected = selected.has(row.id);
+                const rowAccountId = resolveAccountId(row);
+                const rowPartyType = partyTypeForAccount(row, rowAccountId, flatCoa);
+                const rowParties = rowPartyType === "Vendor" ? qbVendors : rowPartyType === "Customer" ? qbCustomers : [];
                 const rowActionLabel =
                   actionKind === "save"
                     ? "Saving…"
@@ -949,9 +1089,11 @@ function BooksQueueContent() {
                         className={selectClass}
                         value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
                         disabled={rowBusy || Boolean(actionLoading)}
-                        onChange={(e) =>
-                          setAccountEdits((prev) => ({ ...prev, [row.id]: e.target.value }))
-                        }
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setAccountEdits((prev) => ({ ...prev, [row.id]: value }));
+                          if (value) void maybeSuggestParty(row, value);
+                        }}
                       >
                         <option value="">Select…</option>
                         {postingCoaGroups.map((group) => (
@@ -967,6 +1109,48 @@ function BooksQueueContent() {
                     ) : (
                       <span className="cell-truncate block text-slate-300" title={row.qb_account_name ?? undefined}>
                         {row.qb_account_name || "—"}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-2 py-2 min-w-0">
+                    {rowPartyType && (status === "pending" || status === "needs_review") ? (
+                      <div className="flex items-center gap-1">
+                        <select
+                          className={selectClass}
+                          value={partyEdits[row.id] ?? row.qb_party_id ?? ""}
+                          disabled={rowBusy || Boolean(actionLoading) || creatingPartyId === row.id}
+                          title={rowPartyType === "Vendor" ? "QuickBooks vendor" : "QuickBooks customer"}
+                          onChange={(e) =>
+                            setPartyEdits((prev) => ({ ...prev, [row.id]: e.target.value }))
+                          }
+                        >
+                          <option value="">—</option>
+                          {rowParties.map((p) => (
+                            <option key={p.qb_party_id} value={p.qb_party_id}>
+                              {p.display_name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 shrink-0 px-2 text-xs"
+                          disabled={rowBusy || Boolean(actionLoading) || creatingPartyId === row.id}
+                          loading={creatingPartyId === row.id}
+                          loadingLabel="…"
+                          title={`Create ${rowPartyType} in QuickBooks`}
+                          onClick={() => void handleCreateParty(row)}
+                        >
+                          +
+                        </Button>
+                      </div>
+                    ) : (
+                      <span
+                        className="cell-truncate block text-slate-300 text-xs"
+                        title={row.qb_party_name ?? undefined}
+                      >
+                        {row.qb_party_name || "—"}
                       </span>
                     )}
                   </td>

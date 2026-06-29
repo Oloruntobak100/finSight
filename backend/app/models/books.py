@@ -65,6 +65,10 @@ class QueueItemResponse(BaseModel):
     qb_account_id: Optional[str] = None
     qb_account_name: Optional[str] = None
     qb_payment_account_id: Optional[str] = None
+    qb_party_id: Optional[str] = None
+    qb_party_type: Optional[str] = None
+    qb_party_name: Optional[str] = None
+    qb_doc_number: Optional[str] = None
     qb_confidence: Optional[float] = None
     qb_suggestion_method: Optional[str] = None
     qb_confidence_reason: Optional[str] = None
@@ -106,11 +110,15 @@ class ApproveRequest(BaseModel):
     final_account_id: str
     post: bool = False
     payment_account_id: Optional[str] = None
+    final_party_id: Optional[str] = None
+    final_party_type: Optional[Literal["Vendor", "Customer"]] = None
 
 
 class BulkApproveItem(BaseModel):
     transaction_id: str
     final_account_id: str
+    final_party_id: Optional[str] = None
+    final_party_type: Optional[Literal["Vendor", "Customer"]] = None
 
 
 class BulkApproveRequest(BaseModel):
@@ -190,6 +198,45 @@ class RevertResponse(BaseModel):
     previous_status: Optional[str] = None
     target: RevertTarget
     transaction: Optional[dict[str, Any]] = None
+
+
+class QbPartyResponse(BaseModel):
+    id: str
+    qb_party_id: str
+    display_name: str
+    party_type: Literal["Vendor", "Customer"]
+    active: bool = True
+
+
+class QbPartyListResponse(BaseModel):
+    vendors: list[QbPartyResponse]
+    customers: list[QbPartyResponse]
+
+
+class QbPartySyncResponse(BaseModel):
+    synced: int
+    removed: int = 0
+    realm_id: Optional[str] = None
+    vendors: Optional[dict[str, Any]] = None
+    customers: Optional[dict[str, Any]] = None
+
+
+class QbPartyCreateRequest(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=100)
+    party_type: Literal["Vendor", "Customer"]
+
+
+class QbPartyCreateResponse(BaseModel):
+    qb_party_id: str
+    qb_party_type: Literal["Vendor", "Customer"]
+    qb_party_name: str
+
+
+class QbPartySuggestResponse(BaseModel):
+    qb_party_id: str
+    qb_party_type: Literal["Vendor", "Customer"]
+    qb_party_name: Optional[str] = None
+    match_score: int = 0
 
 
 class ApproveResponse(BaseModel):
