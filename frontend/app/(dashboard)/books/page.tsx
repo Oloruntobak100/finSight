@@ -8,6 +8,7 @@ import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connec
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageLoader } from "@/components/ui/page-loader";
+import { Spinner } from "@/components/ui/spinner";
 import {
   approveTransaction,
   classifyTransactions,
@@ -144,6 +145,8 @@ function QueueRowActionMenu({
   row,
   status,
   disabled,
+  loading,
+  loadingLabel,
   open,
   onOpenChange,
   onAction,
@@ -151,6 +154,8 @@ function QueueRowActionMenu({
   row: QueueItem;
   status: QbSyncStatus;
   disabled?: boolean;
+  loading?: boolean;
+  loadingLabel?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAction: (action: QueueActionId) => void;
@@ -166,12 +171,16 @@ function QueueRowActionMenu({
         variant="outline"
         className="h-7 gap-1 px-2 text-xs"
         disabled={disabled}
+        loading={loading}
+        loadingLabel={loadingLabel}
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
         aria-haspopup="menu"
       >
-        Actions
-        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+        {loading ? null : "Actions"}
+        {!loading && (
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+        )}
       </Button>
       {open && (
         <>
@@ -234,6 +243,7 @@ function BooksQueueContent() {
   const [queueLoading, setQueueLoading] = useState(false);
   const skipQueueRefresh = useRef(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionKind, setActionKind] = useState<QueueActionId | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -401,8 +411,11 @@ function BooksQueueContent() {
       setError("Select a QuickBooks account first");
       return;
     }
+    const kind: QueueActionId = post ? "post" : "save";
     setActionLoading(row.id);
+    setActionKind(kind);
     setError(null);
+    setInfo(post ? "Posting to QuickBooks…" : "Saving training…");
     try {
       const result = await approveTransaction(row.id, accountId, post);
       const similar = result.similar_updated ?? 0;
@@ -421,22 +434,29 @@ function BooksQueueContent() {
       }
       await refreshData();
     } catch (e) {
+      setInfo(null);
       setError(e instanceof ApiError ? e.message : "Approve failed");
     } finally {
       setActionLoading(null);
+      setActionKind(null);
     }
   }
 
   async function handlePost(id: string) {
     setActionLoading(id);
+    setActionKind("retry");
+    setError(null);
+    setInfo("Posting to QuickBooks…");
     try {
       await postTransaction(id);
       setInfo("Transaction posted to QuickBooks");
       await refreshData();
     } catch (e) {
+      setInfo(null);
       setError(e instanceof ApiError ? e.message : "Post failed");
     } finally {
       setActionLoading(null);
+      setActionKind(null);
     }
   }
 
@@ -457,7 +477,9 @@ function BooksQueueContent() {
 
   async function handleRevert(id: string, target: RevertTarget) {
     setActionLoading(id);
+    setActionKind(target === "needs_review" ? "review" : "new");
     setError(null);
+    setInfo("Updating queue…");
     const labels: Record<RevertTarget, string> = {
       needs_review: "Review",
       unclassified: "New",
@@ -467,9 +489,11 @@ function BooksQueueContent() {
       setInfo(`Moved to ${labels[target]}`);
       await refreshData();
     } catch (e) {
+      setInfo(null);
       setError(e instanceof ApiError ? e.message : "Could not move transaction");
     } finally {
       setActionLoading(null);
+      setActionKind(null);
     }
   }
 
@@ -605,7 +629,17 @@ function BooksQueueContent() {
           {error}
         </div>
       )}
-      {info && (
+      {actionLoading && actionKind && (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-200">
+          <Spinner size="sm" className="text-blue-300" />
+          {actionKind === "save"
+            ? "Saving training and updating similar payees…"
+            : actionKind === "post" || actionKind === "retry"
+              ? "Posting to QuickBooks…"
+              : "Updating queue…"}
+        </div>
+      )}
+      {info && !actionLoading && (
         <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
           {info}
         </div>
@@ -701,13 +735,26 @@ function BooksQueueContent() {
             ) : (
               items.map((row) => {
                 const kind = kindLabel(row);
+                const rowBusy = actionLoading === row.id;
+                const rowActionLabel =
+                  actionKind === "save"
+                    ? "Saving…"
+                    : actionKind === "post" || actionKind === "retry"
+                      ? "Posting…"
+                      : "Working…";
                 return (
-                <tr key={row.id} className="border-b border-slate-800/50 hover:bg-slate-900/40">
+                <tr
+                  key={row.id}
+                  className={`border-b border-slate-800/50 ${
+                    rowBusy ? "bg-blue-950/25" : "hover:bg-slate-900/40"
+                  }`}
+                >
                   {(status === "pending" || status === "needs_review") && (
                     <td className="px-2 py-2">
                       <input
                         type="checkbox"
                         checked={selected.has(row.id)}
+                        disabled={Boolean(actionLoading)}
                         onChange={() => toggleSelect(row.id)}
                         className="rounded border-slate-600"
                       />
@@ -760,6 +807,7 @@ function BooksQueueContent() {
                       <select
                         className={selectClass}
                         value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
+                        disabled={rowBusy || Boolean(actionLoading)}
                         onChange={(e) =>
                           setAccountEdits((prev) => ({ ...prev, [row.id]: e.target.value }))
                         }
@@ -799,7 +847,9 @@ function BooksQueueContent() {
                       <QueueRowActionMenu
                         row={row}
                         status={status}
-                        disabled={actionLoading === row.id}
+                        disabled={Boolean(actionLoading)}
+                        loading={rowBusy}
+                        loadingLabel={rowActionLabel}
                         open={openActionMenuId === row.id}
                         onOpenChange={(next) => setOpenActionMenuId(next ? row.id : null)}
                         onAction={(action) => handleRowAction(row, action)}

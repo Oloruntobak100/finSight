@@ -1044,7 +1044,6 @@ async def propagate_payee_suggestions(
 
     sb = get_supabase()
     mappings = await get_mappings(user_id)
-    user_rules = await load_user_category_rules(user_id, sb)
     coa = await list_coa(user_id)
     coa_ids = _coa_ids(coa)
     automation = await get_user_automation(user_id)
@@ -1077,28 +1076,27 @@ async def propagate_payee_suggestions(
         for row in extra.data or []:
             candidates[row["id"]] = row
 
-    updated = 0
+    updates: list[tuple[str, dict[str, Any]]] = []
     for row in candidates.values():
-        kind = detect_posting_kind(row)
-        if kind in ("transfer", "reversal", "balance_sheet"):
-            continue
-        patch = classify_transaction(
-            row,
-            mappings,
-            user_rules,
-            coa,
-            coa_ids,
-            fingerprint_row=fp_row,
-            automation=automation,
-        )
-        await run_db(
-            lambda t=row["id"], u=patch: sb.table("transactions")
-            .update(u)
-            .eq("id", t)
-            .eq("user_id", user_id)
-            .execute()
-        )
-        updated += 1
+        patch = _fingerprint_prefill_patch(row, fp_row, mappings, coa_ids, automation)
+        if patch:
+            updates.append((row["id"], patch))
+
+    updated = 0
+    for i in range(0, len(updates), PROPAGATE_BATCH_SIZE):
+        batch = updates[i : i + PROPAGATE_BATCH_SIZE]
+
+        async def _apply(txn_id: str, patch: dict[str, Any]) -> None:
+            await run_db(
+                lambda t=txn_id, u=patch: sb.table("transactions")
+                .update(u)
+                .eq("id", t)
+                .eq("user_id", user_id)
+                .execute()
+            )
+
+        await asyncio.gather(*[_apply(txn_id, patch) for txn_id, patch in batch])
+        updated += len(batch)
     return updated
 
 
@@ -1123,9 +1121,9 @@ async def approve_transaction(
     if not txn:
         raise ValueError("Transaction not found")
 
-    await ensure_coa_synced(user_id)
-    coa = await list_coa(user_id)
-    coa_ids = _account_ids_set(coa)
+    coa, coa_ids = await _coa_validated_for_accounts(
+        user_id, final_account_id, txn.get("qb_payment_account_id")
+    )
     if not _account_valid(coa_ids, final_account_id):
         raise ValueError("Invalid QuickBooks account")
 
@@ -1147,6 +1145,9 @@ async def approve_transaction(
         mappings = await get_mappings(user_id)
         bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
         payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
+
+    if payment_account_id and not _account_valid(coa_ids, payment_account_id):
+        coa, coa_ids = await _coa_validated_for_accounts(user_id, final_account_id, payment_account_id)
 
     _require_accounts_in_coa(
         coa,
@@ -1177,14 +1178,15 @@ async def approve_transaction(
         fingerprint_id=fp_row.get("id"),
     )
 
-    await store_posting_memory(
-        user_id,
-        txn,
-        final_account_id,
-        final_name,
-        fingerprint_id=fp_row.get("id"),
-        posting_decision_id=decision.get("id"),
-        method="manual",
+    asyncio.create_task(
+        _schedule_posting_memory(
+            user_id,
+            txn,
+            final_account_id,
+            final_name,
+            fp_row.get("id"),
+            decision.get("id"),
+        )
     )
 
     recurrence = int(fp_row.get("recurrence_count") or 0)
@@ -1517,6 +1519,89 @@ async def auto_post_approved_transactions() -> dict[str, int]:
 async def ensure_coa_synced(user_id: str) -> dict[str, Any]:
     """Always pull the latest Chart of Accounts from QuickBooks (with stale purge)."""
     return await sync_chart_of_accounts(user_id)
+
+
+async def _coa_validated_for_accounts(
+    user_id: str, *account_ids: str
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Use cached COA when possible; sync from QuickBooks only if an account is missing."""
+    coa = await list_coa(user_id)
+    coa_ids = _account_ids_set(coa)
+    needed = {str(a) for a in account_ids if a}
+    if needed and not needed.issubset(coa_ids):
+        await sync_chart_of_accounts(user_id)
+        coa = await list_coa(user_id)
+        coa_ids = _account_ids_set(coa)
+    return coa, coa_ids
+
+
+PROPAGATE_BATCH_SIZE = 25
+
+
+def _fingerprint_prefill_patch(
+    txn: dict[str, Any],
+    fp_row: dict[str, Any],
+    mappings: list[dict[str, Any]],
+    coa_ids: set[str],
+    automation: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    kind = detect_posting_kind(txn)
+    if kind in ("transfer", "reversal", "balance_sheet"):
+        return None
+
+    account_id = str(fp_row.get("qb_account_id") or "")
+    if not account_id or not _account_valid(coa_ids, account_id):
+        return None
+
+    confidence = fingerprint_match_confidence(txn, fp_row)
+    if confidence < CONFIDENCE_FINGERPRINT_MIN:
+        return None
+
+    bank_id = txn.get("account_id")
+    bank_map = _mapping_lookup(mappings, "bank_account", str(bank_id)) if bank_id else None
+    payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
+
+    status = _resolve_status(
+        qb_account_id=account_id,
+        payment_account_id=payment_account_id,
+        confidence=confidence,
+        method="fingerprint",
+        automation=automation,
+    )
+
+    return {
+        "qb_account_id": account_id,
+        "qb_account_name": fp_row.get("qb_account_name"),
+        "qb_payment_account_id": payment_account_id,
+        "fingerprint_id": fp_row.get("id"),
+        "qb_suggestion_method": "fingerprint",
+        "qb_confidence": round(confidence, 2),
+        "qb_confidence_reason": fingerprint_confidence_reason(fp_row),
+        "qb_sync_status": status,
+        "payee_pattern": txn.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern"),
+    }
+
+
+async def _schedule_posting_memory(
+    user_id: str,
+    txn: dict[str, Any],
+    final_account_id: str,
+    final_name: str | None,
+    fingerprint_id: str | None,
+    posting_decision_id: str | None,
+) -> None:
+    try:
+        await store_posting_memory(
+            user_id,
+            txn,
+            final_account_id,
+            final_name,
+            fingerprint_id=fingerprint_id,
+            posting_decision_id=posting_decision_id,
+            method="manual",
+        )
+    except Exception:
+        logger.exception("Background posting memory failed for txn %s", txn.get("id"))
 
 
 async def get_learning_progress(user_id: str) -> list[dict[str, Any]]:

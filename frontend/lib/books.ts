@@ -1,4 +1,4 @@
-import { apiFetch, BOOKS_CLASSIFY_TIMEOUT_MS, type ApiFetchOptions } from "@/lib/api";
+import { apiFetch, BOOKS_APPROVE_TIMEOUT_MS, BOOKS_CLASSIFY_TIMEOUT_MS, type ApiFetchOptions } from "@/lib/api";
 
 export type QbSyncStatus =
   | "pending"
@@ -204,6 +204,7 @@ export async function approveTransaction(
       final_account_id: finalAccountId,
       post,
     }),
+    timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
   });
 }
 
@@ -240,6 +241,7 @@ export async function postTransaction(transactionId: string): Promise<unknown> {
   return apiFetch("/books/post", {
     method: "POST",
     body: JSON.stringify({ transaction_id: transactionId }),
+    timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
   });
 }
 
@@ -269,6 +271,7 @@ export async function revertTransaction(
   return apiFetch("/books/revert", {
     method: "POST",
     body: JSON.stringify({ transaction_id: transactionId, target }),
+    timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
   });
 }
 
