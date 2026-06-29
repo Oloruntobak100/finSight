@@ -79,25 +79,17 @@ function kindLabel(row: QueueItem) {
   return { type, direction, title };
 }
 
-function coaForRow(
-  row: QueueItem,
-  expenseCoa: CoaAccount[],
-  incomeCoa: CoaAccount[]
-): CoaAccount[] {
-  if (row.qb_posting_type === "deposit") {
-    return incomeCoa;
-  }
-  if (
-    row.qb_posting_type === "refund" ||
-    row.qb_posting_type === "expense" ||
-    row.qb_posting_type === "fee"
-  ) {
-    return expenseCoa;
-  }
-  if (row.transaction_type === "credit") {
-    return incomeCoa;
-  }
-  return expenseCoa;
+const POSTING_ACCOUNT_TYPES = new Set([
+  "Income",
+  "Expense",
+  "Other Expense",
+  "Cost of Goods Sold",
+]);
+
+function buildPostingCoa(accounts: CoaAccount[]): CoaAccount[] {
+  return accounts
+    .filter((a) => a.account_type && POSTING_ACCOUNT_TYPES.has(a.account_type))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 const selectClass =
@@ -241,8 +233,7 @@ function BooksQueueContent() {
   const [qbEnvironment, setQbEnvironment] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<BooksReadiness | null>(null);
   const [items, setItems] = useState<QueueItem[]>([]);
-  const [expenseCoa, setExpenseCoa] = useState<CoaAccount[]>([]);
-  const [incomeCoa, setIncomeCoa] = useState<CoaAccount[]>([]);
+  const [postingCoa, setPostingCoa] = useState<CoaAccount[]>([]);
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
@@ -353,17 +344,14 @@ function BooksQueueContent() {
 
         if (!sum.readiness?.bank_connected) return;
 
-        const [coa, expense, income, auto, queue] = await Promise.all([
+        const [coa, auto, queue] = await Promise.all([
           listCoa(undefined, true),
-          listCoa("Expense"),
-          listCoa("Income"),
           sum.automation ? Promise.resolve(null) : getAutomationSettings(),
           getBooksQueue(status, page, 20),
         ]);
         if (cancelled) return;
 
-        setExpenseCoa(expense.items);
-        setIncomeCoa(income.items);
+        setPostingCoa(buildPostingCoa(coa.items));
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
@@ -960,7 +948,7 @@ function BooksQueueContent() {
                   </td>
                   <td className="px-2 py-2 min-w-0">
                     {(status === "pending" || status === "needs_review") &&
-                    coaForRow(row, expenseCoa, incomeCoa).length > 0 ? (
+                    postingCoa.length > 0 ? (
                       <select
                         className={selectClass}
                         value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
@@ -970,7 +958,7 @@ function BooksQueueContent() {
                         }
                       >
                         <option value="">Select…</option>
-                        {coaForRow(row, expenseCoa, incomeCoa).map((a) => (
+                        {postingCoa.map((a) => (
                           <option key={a.qb_account_id} value={a.qb_account_id}>
                             {a.name}
                           </option>
