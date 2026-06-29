@@ -7,7 +7,10 @@ from app.services.reconciliation_service import (
     DATE_TOLERANCE_DAYS,
     _amounts_match,
     _dates_match,
+    _deposit_bank_account_id,
+    _filter_qb_by_bank,
     _parse_qb_date,
+    _purchase_bank_account_id,
 )
 
 
@@ -33,3 +36,22 @@ def test_parse_qb_date():
 def test_tolerance_constants():
     assert DATE_TOLERANCE_DAYS == 3
     assert AMOUNT_TOLERANCE_PCT == 0.01
+
+
+def test_purchase_bank_account_ref():
+    assert _purchase_bank_account_id({"AccountRef": {"value": "35"}}) == "35"
+    assert _purchase_bank_account_id({}) is None
+
+
+def test_deposit_bank_account_ref():
+    assert _deposit_bank_account_id({"DepositToAccountRef": {"value": "35"}}) == "35"
+
+
+def test_filter_qb_by_bank():
+    items = [
+        {"Id": "1", "AccountRef": {"value": "35"}},
+        {"Id": "2", "AccountRef": {"value": "99"}},
+    ]
+    filtered = _filter_qb_by_bank(items, "35", bank_ref=_purchase_bank_account_id)
+    assert len(filtered) == 1
+    assert filtered[0]["Id"] == "1"

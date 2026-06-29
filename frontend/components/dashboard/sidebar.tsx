@@ -28,7 +28,7 @@ const MAIN_NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/transactions", label: "Transactions", icon: Receipt },
   { href: "/books", label: "Books", icon: BookOpen },
-  { href: "/reconciliation", label: "Bank check", icon: FileText },
+  { href: "/reconciliation", label: "Bank Reconciliation", icon: FileText },
 ];
 
 const ANALYTICS_NAV: NavItem[] = [

@@ -352,12 +352,42 @@ export async function getLearningProgress(): Promise<{
   return apiFetch("/users/learning-progress");
 }
 
-export async function runReconciliation(periodStart?: string, periodEnd?: string): Promise<unknown> {
+export type ReconciliationSide = "debit" | "credit" | "all";
+
+export interface ReconciliationBankOption {
+  id: string;
+  account_name: string;
+  provider: string;
+  qb_account_id?: string | null;
+  qb_account_name?: string | null;
+}
+
+export interface ReconciliationOptions {
+  bank_accounts: ReconciliationBankOption[];
+  qb_bank_accounts: { qb_account_id: string; name: string }[];
+}
+
+export interface ReconciliationRunParams {
+  periodStart?: string;
+  periodEnd?: string;
+  bankAccountId?: string;
+  qbBankAccountId?: string;
+  transactionSide?: ReconciliationSide;
+}
+
+export async function getReconciliationOptions(): Promise<ReconciliationOptions> {
+  return apiFetch("/reconciliation/options");
+}
+
+export async function runReconciliation(params: ReconciliationRunParams = {}): Promise<unknown> {
   return apiFetch("/reconciliation/run", {
     method: "POST",
     body: JSON.stringify({
-      period_start: periodStart ?? null,
-      period_end: periodEnd ?? null,
+      period_start: params.periodStart ?? null,
+      period_end: params.periodEnd ?? null,
+      bank_account_id: params.bankAccountId ?? null,
+      qb_bank_account_id: params.qbBankAccountId ?? null,
+      transaction_side: params.transactionSide ?? "debit",
     }),
   });
 }
