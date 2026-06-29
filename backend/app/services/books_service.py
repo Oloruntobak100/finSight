@@ -77,6 +77,19 @@ SUMMARY_STATUSES = (
 _LEGACY_REVIEW_STATUSES = ("excluded", "failed")
 
 
+def _decision_method(method: str | None) -> str:
+    """Map classify suggestion methods to posting_decisions.method allowed values."""
+    m = (method or "manual").lower()
+    legacy = frozenset({"rule", "fingerprint", "rag", "llm", "auto", "manual"})
+    if m in legacy:
+        return m
+    if m == "category":
+        return "rule"
+    if m == "auto_detect":
+        return "manual"
+    return "manual"
+
+
 def _apply_books_account_filter(query: Any, active_bank_ids: set[str]) -> Any:
     return apply_active_bank_scope(query, active_bank_ids)
 
@@ -320,7 +333,7 @@ async def log_posting_decision(
         "was_accepted": was_accepted,
         "edit_made": edit_made,
         "confidence_at_time": confidence_at_time,
-        "method": method,
+        "method": _decision_method(method),
         "reason_text": reason_text,
     }
     res = await run_db(lambda: sb.table("posting_decisions").insert(row).execute())

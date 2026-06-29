@@ -1,6 +1,6 @@
 """Unit tests for Books Pipeline classification (no QB API)."""
 
-from app.services.books_service import classify_transaction
+from app.services.books_service import _decision_method, classify_transaction
 from app.services.fingerprint_service import extract_fingerprint
 
 
@@ -14,6 +14,12 @@ def _coa(*rows: tuple[str, str, str]) -> list[dict]:
         {"qb_account_id": qb_id, "name": name, "account_type": acct_type}
         for qb_id, name, acct_type in rows
     ]
+
+
+def test_decision_method_maps_category_for_posting_decisions():
+    assert _decision_method("category") == "rule"
+    assert _decision_method("auto_detect") == "manual"
+    assert _decision_method("fingerprint") == "fingerprint"
 
 
 def test_transfer_goes_to_review_queue():
