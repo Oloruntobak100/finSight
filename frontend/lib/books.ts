@@ -19,7 +19,8 @@ export type SuggestionMethod =
   | "llm"
   | "auto"
   | "manual"
-  | "auto_detect";
+  | "auto_detect"
+  | "category";
 
 export interface CoaAccount {
   id: string;

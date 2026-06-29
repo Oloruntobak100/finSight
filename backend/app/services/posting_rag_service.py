@@ -17,6 +17,19 @@ RAG_MATCH_THRESHOLD = 0.85
 RAG_MATCH_COUNT = 5
 
 
+async def user_has_posting_memory(user_id: str) -> bool:
+    """True once the user has approved at least one posting (RAG training started)."""
+    sb = get_supabase()
+    res = await run_db(
+        lambda: sb.table("posting_memory")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return (res.count or 0) > 0
+
+
 async def _embed_text(text: str) -> list[float] | None:
     if not settings.openai_api_key:
         return None

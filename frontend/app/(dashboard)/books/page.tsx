@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AlertCircle, BookOpen, ChevronDown, RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageLoader } from "@/components/ui/page-loader";
@@ -85,31 +84,6 @@ function coaForRow(
 const selectClass =
   "h-8 w-full max-w-full rounded-md border border-slate-700 bg-slate-900 px-1.5 text-xs text-white";
 
-function confidenceBadge(
-  confidence: number | null | undefined,
-  syncStatus?: QbSyncStatus | null,
-  reason?: string | null
-) {
-  if (syncStatus === "unclassified") {
-    return (
-      <Badge className="bg-slate-600/20 text-slate-300" title={reason ?? undefined}>
-        —
-      </Badge>
-    );
-  }
-  if (syncStatus === "skipped") {
-    return (
-      <Badge className="bg-slate-600/20 text-slate-300" title="Not an expense transaction">
-        Skipped
-      </Badge>
-    );
-  }
-  if (confidence == null) return <Badge variant="secondary">—</Badge>;
-  if (confidence >= 0.9) return <Badge className="bg-emerald-600/20 text-emerald-400">High</Badge>;
-  if (confidence >= 0.6) return <Badge className="bg-amber-600/20 text-amber-400">Medium</Badge>;
-  return <Badge className="bg-red-600/20 text-red-400">Low</Badge>;
-}
-
 function directionLabel(row: QueueItem) {
   const cat = (row.category || "").trim();
   if (/transfer in/i.test(cat)) return "Transfer In";
@@ -126,38 +100,6 @@ function kindLabel(row: QueueItem) {
   const type = postingTypeLabel(row.qb_posting_type, row.transaction_type, row.qb_confidence_reason);
   const direction = directionLabel(row);
   return { type, direction, title: `${direction} · ${type}` };
-}
-
-function matchLabel(
-  confidence: number | null | undefined,
-  syncStatus?: QbSyncStatus | null,
-  method?: string | null,
-  reason?: string | null
-) {
-  const methodText = methodLabel(method);
-  const title = [reason, methodText].filter(Boolean).join(" · ") || undefined;
-  if (syncStatus === "unclassified") {
-    return { badge: confidenceBadge(confidence, syncStatus, reason), sub: null, title };
-  }
-  return {
-    badge: confidenceBadge(confidence, syncStatus, reason),
-    sub: methodText,
-    title,
-  };
-}
-
-function methodLabel(method: string | null | undefined) {
-  if (!method) return null;
-  const labels: Record<string, string> = {
-    rule: "Rule",
-    fingerprint: "Fingerprint",
-    rag: "RAG",
-    llm: "AI",
-    auto: "Auto",
-    manual: "Manual",
-    auto_detect: "Auto-detect",
-  };
-  return labels[method] ?? method;
 }
 
 type QueueActionId = "post" | "save" | "review" | "new" | "retry";
@@ -299,7 +241,7 @@ function BooksQueueContent() {
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
-    7 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
+    6 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
 
   const refreshQueue = useCallback(
     async (statusFilter: QbSyncStatus, pageNum: number) => {
@@ -711,7 +653,6 @@ function BooksQueueContent() {
             <col />
             <col className="w-[5.5rem]" />
             <col className="w-[16%]" />
-            <col className="w-[4.5rem]" />
             <col className="w-[6.5rem]" />
             <col className="w-[5.5rem]" />
           </colgroup>
@@ -727,7 +668,6 @@ function BooksQueueContent() {
               <th className="px-2 py-2">Payee</th>
               <th className="px-2 py-2">Kind</th>
               <th className="px-2 py-2">QB Account</th>
-              <th className="px-2 py-2">Match</th>
               <th className="px-2 py-2 text-right">Amount</th>
               <th className="px-2 py-2">Actions</th>
             </tr>
@@ -748,12 +688,6 @@ function BooksQueueContent() {
             ) : (
               items.map((row) => {
                 const kind = kindLabel(row);
-                const match = matchLabel(
-                  row.qb_confidence,
-                  row.qb_sync_status,
-                  row.qb_suggestion_method,
-                  row.qb_confidence_reason
-                );
                 return (
                 <tr key={row.id} className="border-b border-slate-800/50 hover:bg-slate-900/40">
                   {(status === "pending" || status === "needs_review") && (
@@ -829,12 +763,6 @@ function BooksQueueContent() {
                         {row.qb_account_name || "—"}
                       </span>
                     )}
-                  </td>
-                  <td className="px-2 py-2" title={match.title}>
-                    <div className="flex flex-col gap-0.5">
-                      {match.badge}
-                      {match.sub && <span className="text-[10px] text-slate-500">{match.sub}</span>}
-                    </div>
                   </td>
                   <td
                     className={`px-2 py-2 text-right text-xs font-medium tabular-nums ${

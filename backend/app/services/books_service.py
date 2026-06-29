@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-import anthropic
-from openai import AsyncOpenAI
-
-from app.config import settings
 from app.database import get_supabase, run_db
 from app.services.categorization_service import load_user_category_rules, resolve_mono_transaction_category
 from app.services.fingerprint_service import (
@@ -27,9 +22,8 @@ from app.services.fingerprint_service import (
 )
 from app.services.posting_rag_service import (
     rag_classify_hint,
-    recent_decisions_context,
-    search_similar_memories,
     store_posting_memory,
+    user_has_posting_memory,
 )
 from app.services.quickbooks_service import qb_company_post_json, sync_chart_of_accounts
 from app.services.transaction_posting_utils import (
@@ -60,7 +54,9 @@ QbSyncStatus = Literal[
     "skipped",
     "auto_approved",
 ]
-SuggestionMethod = Literal["rule", "fingerprint", "rag", "llm", "auto", "manual", "auto_detect"]
+SuggestionMethod = Literal[
+    "rule", "fingerprint", "rag", "llm", "auto", "manual", "auto_detect", "category"
+]
 CONFIDENCE_AUTO = 0.92
 CONFIDENCE_LLM_MIN = 0.85
 CONFIDENCE_FINGERPRINT_MIN = FINGERPRINT_MATCH_MIN
@@ -125,16 +121,6 @@ def _auto_detect_reason(txn: dict[str, Any], kind: PostingKind) -> str:
         f"{direction} — {channel_label}{bank_suffix}; "
         f"map to income or expense to train the system"
     )
-
-
-def _resolve_llm_provider() -> str:
-    if settings.llm_provider in ("openai", "anthropic"):
-        return settings.llm_provider
-    if settings.openai_api_key:
-        return "openai"
-    if settings.anthropic_api_key:
-        return "anthropic"
-    return "none"
 
 
 async def get_user_automation(user_id: str) -> dict[str, Any]:
@@ -339,83 +325,6 @@ async def log_posting_decision(
     return (res.data or [row])[0]
 
 
-async def _llm_classify(
-    txn: dict[str, Any],
-    target_accounts: list[dict[str, Any]],
-    user_id: str,
-    *,
-    posting_label: str = "expense",
-) -> tuple[str | None, str | None, float, str | None]:
-    if not target_accounts:
-        return None, None, 0.0, None
-
-    provider = _resolve_llm_provider()
-    if provider == "none":
-        return None, None, 0.0, None
-
-    accounts_text = "\n".join(
-        f"- id={a['qb_account_id']}: {a['name']} ({a.get('account_sub_type') or a.get('account_type')})"
-        for a in target_accounts[:80]
-    )
-    history = await recent_decisions_context(user_id)
-    rag_hits = await search_similar_memories(user_id, txn, threshold=0.70)
-    rag_block = ""
-    if rag_hits:
-        rag_block = "Similar approved transactions:\n" + "\n".join(
-            f"- {h.get('content_text')} (similarity {float(h.get('similarity', 0)):.0%})"
-            for h in rag_hits[:5]
-        )
-
-    prompt = f"""You are a bookkeeping assistant for a Nigerian SME using QuickBooks.
-{history}
-
-{rag_block}
-
-Pick the best QuickBooks {posting_label} account for this bank transaction.
-Return ONLY valid JSON: {{"account_id": "<qb_account_id>", "confidence": 0.0-1.0, "reason": "one line"}}
-
-Transaction:
-- date: {txn.get('transaction_date')}
-- merchant: {txn.get('merchant_name')}
-- description: {txn.get('description')}
-- payee_pattern: {txn.get('payee_pattern')}
-- category: {txn.get('category')}
-- amount: {txn.get('amount')}
-- direction: {txn.get('transaction_type')}
-
-Accounts:
-{accounts_text}"""
-
-    try:
-        if provider == "openai":
-            client = AsyncOpenAI(api_key=settings.openai_api_key)
-            res = await client.chat.completions.create(
-                model=settings.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0,
-            )
-            raw = res.choices[0].message.content or "{}"
-        else:
-            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-            res = await client.messages.create(
-                model=settings.anthropic_model,
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = res.content[0].text if res.content else "{}"
-
-        parsed = json.loads(raw)
-        account_id = str(parsed.get("account_id", "")) or None
-        confidence = float(parsed.get("confidence", 0.7))
-        reason = parsed.get("reason")
-        name = _coa_name_from_list(target_accounts, account_id) if account_id else None
-        return account_id, name, confidence, reason
-    except Exception:
-        logger.exception("LLM classify failed for txn %s", txn.get("id"))
-        return None, None, 0.0, None
-
-
 def _resolve_status(
     *,
     qb_account_id: str | None,
@@ -454,7 +363,6 @@ def classify_transaction(
     fingerprint_row: dict[str, Any] | None = None,
     learned_kind: PostingKind | None = None,
     rag_result: tuple[str | None, str | None, float, str | None] | None = None,
-    llm_result: tuple[str | None, str | None, float, str | None] | None = None,
     automation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     account_id = txn.get("account_id")
@@ -512,6 +420,10 @@ def classify_transaction(
                 confidence = 0.88
                 method = "rule"
                 reason = f"Merchant rule matched '{rule_category}'"
+            elif not reason:
+                reason = f"Merchant rule matched '{rule_category}' — add category mapping"
+                method = "category"
+                confidence = min(confidence, 0.55)
 
     if not qb_account_id and fingerprint_row:
         fp_conf = float(fingerprint_row.get("confidence") or 0)
@@ -532,15 +444,6 @@ def classify_transaction(
             method = "rag"
             reason = rag_reason
 
-    if not qb_account_id and llm_result:
-        llm_id, llm_name, llm_conf, llm_reason = llm_result
-        if llm_id and _account_valid(coa_ids, llm_id):
-            qb_account_id = llm_id
-            qb_account_name = llm_name
-            confidence = llm_conf
-            method = "llm"
-            reason = llm_reason
-
     if kind == "income" and not reason:
         reason = "Income / deposit — map to a QuickBooks income account"
     elif kind == "refund" and not reason:
@@ -553,6 +456,10 @@ def classify_transaction(
             method = "auto_detect"
         if not qb_account_id:
             confidence = min(confidence, 0.55)
+    elif not qb_account_id and category and category != "Uncategorized" and not method:
+        reason = f"Category: {category} — map to QuickBooks account"
+        method = "category"
+        confidence = min(confidence, 0.58)
 
     if qb_account_id and not payment_account_id:
         confidence = min(confidence, 0.84)
@@ -644,10 +551,10 @@ async def _classify_transactions_batch(
     coa_ids: set[str],
     automation: dict[str, Any],
     active_bank_ids: set[str],
+    rag_enabled: bool = False,
     allow_reclassify: bool = False,
 ) -> int:
     sb = get_supabase()
-    provider = _resolve_llm_provider()
     classified = 0
 
     for txn in txns:
@@ -679,38 +586,16 @@ async def _classify_transactions_batch(
         kind = detect_posting_kind(txn, learned_kind=learned_kind)
 
         rag_result = None
-        llm_result = None
         has_rule = bool(_mapping_lookup(mappings, "category", txn.get("category") or ""))
-        if kind in ("transfer", "reversal", "balance_sheet"):
-            target_accounts = [
-                a
-                for a in coa
-                if a.get("account_type")
-                in ("Income", "Expense", "Other Expense", "Cost of Goods Sold")
-            ]
-            posting_label = "income" if txn.get("transaction_type") == "credit" else "expense"
-        else:
-            target_accounts = _accounts_for_kind(coa, kind)
-            posting_label = "income" if kind == "income" else "expense"
-
         if kind == "fee" and _default_fee_account(coa):
             has_rule = True
 
-        if not has_rule and not (
-            fingerprint_row and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN
-        ):
+        fp_hit = (
+            fingerprint_row
+            and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN
+        )
+        if rag_enabled and not has_rule and not fp_hit:
             rag_result = await rag_classify_hint(user_id, txn, coa_ids)
-
-        if (
-            not has_rule
-            and not (fingerprint_row and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN)
-            and not (rag_result and rag_result[0])
-            and provider != "none"
-            and target_accounts
-        ):
-            llm_result = await _llm_classify(
-                txn, target_accounts, user_id, posting_label=posting_label
-            )
 
         update = classify_transaction(
             txn,
@@ -721,7 +606,6 @@ async def _classify_transactions_batch(
             fingerprint_row=fingerprint_row,
             learned_kind=learned_kind,
             rag_result=rag_result,
-            llm_result=llm_result,
             automation=automation,
         )
         if allow_reclassify:
@@ -756,6 +640,7 @@ async def classify_user_transactions(
     coa = await list_coa(user_id)
     coa_ids = _coa_ids(coa)
     automation = await get_user_automation(user_id)
+    rag_enabled = await user_has_posting_memory(user_id)
 
     total_classified = 0
 
@@ -779,6 +664,7 @@ async def classify_user_transactions(
             coa_ids=coa_ids,
             automation=automation,
             active_bank_ids=active_bank_ids,
+            rag_enabled=rag_enabled,
             allow_reclassify=True,
         )
     else:
@@ -797,6 +683,7 @@ async def classify_user_transactions(
                 coa_ids=coa_ids,
                 automation=automation,
                 active_bank_ids=active_bank_ids,
+                rag_enabled=rag_enabled,
             )
             total_classified += batch_count
             if len(txns) < CLASSIFY_BATCH_SIZE:
@@ -817,6 +704,7 @@ async def classify_user_transactions(
                 coa_ids=coa_ids,
                 automation=automation,
                 active_bank_ids=active_bank_ids,
+                rag_enabled=rag_enabled,
                 allow_reclassify=True,
             )
             total_classified += batch_count
