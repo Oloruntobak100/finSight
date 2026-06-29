@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertCircle, BookOpen, ChevronDown, RefreshCw } from "lucide-react";
+import { AlertCircle, BookOpen, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -150,7 +150,131 @@ function defaultPartyDisplayName(row: QueueItem): string {
 }
 
 const selectClass =
-  "h-8 w-full max-w-full rounded-md border border-slate-700 bg-slate-900 px-1.5 text-xs text-white";
+  "h-8 w-full min-w-0 rounded-md border border-slate-700/80 bg-slate-900/90 px-2 text-xs text-slate-200";
+
+const cellPad = "px-3 py-2.5 align-top";
+
+function QuickBooksMappingCell({
+  row,
+  status,
+  rowBusy,
+  actionLoading,
+  rowAccountId,
+  rowPartyType,
+  rowParties,
+  postingCoaGroups,
+  accountEdits,
+  partyEdits,
+  creatingPartyId,
+  onAccountChange,
+  onPartyChange,
+  onCreateParty,
+}: {
+  row: QueueItem;
+  status: QbSyncStatus;
+  rowBusy: boolean;
+  actionLoading: string | null;
+  rowAccountId: string | undefined;
+  rowPartyType: QbPartyType | null;
+  rowParties: QbParty[];
+  postingCoaGroups: CoaGroup[];
+  accountEdits: Record<string, string>;
+  partyEdits: Record<string, string>;
+  creatingPartyId: string | null;
+  onAccountChange: (value: string) => void;
+  onPartyChange: (value: string) => void;
+  onCreateParty: () => void;
+}) {
+  const editable = status === "pending" || status === "needs_review";
+  const disabled = rowBusy || Boolean(actionLoading);
+
+  if (!editable || !hasPostingAccounts(postingCoaGroups)) {
+    return (
+      <div className="space-y-1 text-xs">
+        <div className="text-slate-300 truncate" title={row.qb_account_name ?? undefined}>
+          {row.qb_account_name || "—"}
+        </div>
+        {row.qb_party_name ? (
+          <div className="text-slate-500 truncate" title={row.qb_party_name}>
+            {row.qb_party_name}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  const accountValue = accountEdits[row.id] ?? row.qb_account_id ?? "";
+  const partyValue = partyEdits[row.id] ?? row.qb_party_id ?? "";
+  const partyLabel = rowPartyType === "Customer" ? "Customer" : "Vendor";
+
+  return (
+    <div className="space-y-1.5 min-w-[11rem]">
+      <select
+        className={selectClass}
+        value={accountValue}
+        disabled={disabled}
+        title={flatCoaName(postingCoaGroups, accountValue) ?? "QuickBooks account"}
+        onChange={(e) => onAccountChange(e.target.value)}
+      >
+        <option value="">Account…</option>
+        {postingCoaGroups.map((group) => (
+          <optgroup key={group.label} label={group.label}>
+            {group.items.map((a) => (
+              <option key={a.qb_account_id} value={a.qb_account_id}>
+                {a.name}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+
+      {rowPartyType ? (
+        <div className="flex items-center gap-1">
+          <select
+            className={selectClass}
+            value={partyValue}
+            disabled={disabled || creatingPartyId === row.id || !accountValue}
+            title={rowParties.find((p) => p.qb_party_id === partyValue)?.display_name ?? partyLabel}
+            onChange={(e) => onPartyChange(e.target.value)}
+          >
+            <option value="">{partyLabel}…</option>
+            {rowParties.map((p) => (
+              <option key={p.qb_party_id} value={p.qb_party_id}>
+                {p.display_name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-700/80 bg-slate-900/90 text-slate-400 hover:border-slate-600 hover:text-white disabled:opacity-40"
+            disabled={disabled || creatingPartyId === row.id || !accountValue}
+            title={`Create ${partyLabel} in QuickBooks`}
+            onClick={onCreateParty}
+          >
+            {creatingPartyId === row.id ? (
+              <Spinner size="sm" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </div>
+      ) : (
+        <div className="flex h-8 items-center px-0.5 text-[10px] text-slate-600">
+          {accountValue ? "N/A for this account" : "Select account above"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function flatCoaName(groups: CoaGroup[], accountId: string): string | undefined {
+  if (!accountId) return undefined;
+  for (const group of groups) {
+    const hit = group.items.find((a) => a.qb_account_id === accountId);
+    if (hit) return hit.name;
+  }
+  return undefined;
+}
 
 function directionLabel(row: QueueItem) {
   const cat = (row.category || "").trim();
@@ -230,18 +354,16 @@ function QueueRowActionMenu({
         type="button"
         size="sm"
         variant="outline"
-        className="h-7 gap-1 px-2 text-xs"
+        className="h-8 w-8 shrink-0 p-0"
         disabled={disabled}
         loading={loading}
         loadingLabel={loadingLabel}
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label="Row actions"
       >
-        {loading ? null : "Actions"}
-        {!loading && (
-          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
-        )}
+        {!loading && <MoreHorizontal className="h-4 w-4" />}
       </Button>
       {open && (
         <>
@@ -317,7 +439,7 @@ function BooksQueueContent() {
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
-    7 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
+    6 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
 
   const refreshQueue = useCallback(
     async (statusFilter: QbSyncStatus, pageNum: number) => {
@@ -974,29 +1096,29 @@ function BooksQueueContent() {
         </div>
       )}
 
-      <div className="relative overflow-hidden rounded-xl border border-slate-800/70">
+      <div className="relative overflow-x-auto rounded-xl border border-slate-800/70">
         {queueLoading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/55 backdrop-blur-[1px]">
             <PageLoader variant="compact" message="" />
           </div>
         )}
         <table
-          className={`table-fit text-sm transition-opacity ${queueLoading ? "pointer-events-none opacity-40" : ""}`}
+          className={`min-w-[960px] w-full text-sm transition-opacity ${queueLoading ? "pointer-events-none opacity-40" : ""}`}
         >
           <colgroup>
-            {(status === "pending" || status === "needs_review") && <col className="w-8" />}
-            <col className="w-[4.5rem]" />
-            {showBankColumn && <col className="w-[6rem]" />}
-            <col />
-            <col className="w-[5.5rem]" />
-            <col className="w-[16%]" />
-            <col className="w-[6.5rem]" />
-            <col className="w-[5.5rem]" />
+            {(status === "pending" || status === "needs_review") && <col className="w-10" />}
+            <col className="w-[4.25rem]" />
+            {showBankColumn && <col className="w-[5.5rem]" />}
+            <col className="w-[18%]" />
+            <col className="w-[4.75rem]" />
+            <col className="w-[26%]" />
+            <col className="w-[7.5rem]" />
+            <col className="w-10" />
           </colgroup>
           <thead>
-            <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
+            <tr className="border-b border-slate-800 text-left text-[11px] font-medium uppercase tracking-wide text-slate-500">
               {(status === "pending" || status === "needs_review") && (
-                <th className="px-2 py-2">
+                <th className={`${cellPad} pb-2`}>
                   <input
                     type="checkbox"
                     checked={allOnPageSelected}
@@ -1007,14 +1129,20 @@ function BooksQueueContent() {
                   />
                 </th>
               )}
-              <th className="px-2 py-2">Date</th>
-              {showBankColumn && <th className="px-2 py-2">Bank</th>}
-              <th className="px-2 py-2">Payee</th>
-              <th className="px-2 py-2">Kind</th>
-              <th className="px-2 py-2">QB Account</th>
-              <th className="px-2 py-2">QBO Payee</th>
-              <th className="px-2 py-2 text-right">Amount</th>
-              <th className="px-2 py-2">Actions</th>
+              <th className={`${cellPad} pb-2`}>Date</th>
+              {showBankColumn && <th className={`${cellPad} pb-2`}>Bank</th>}
+              <th className={`${cellPad} pb-2`}>Payee</th>
+              <th className={`${cellPad} pb-2`}>Kind</th>
+              <th className={`${cellPad} pb-2`}>
+                <span className="block">QuickBooks</span>
+                <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-slate-600">
+                  Account · {status === "pending" || status === "needs_review" ? "Vendor / customer" : "Mapping"}
+                </span>
+              </th>
+              <th className={`${cellPad} pb-2 text-right`}>Amount</th>
+              <th className={`${cellPad} pb-2`}>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -1056,7 +1184,7 @@ function BooksQueueContent() {
                   }`}
                 >
                   {(status === "pending" || status === "needs_review") && (
-                    <td className="px-2 py-2">
+                    <td className={cellPad}>
                       <input
                         type="checkbox"
                         checked={selected.has(row.id)}
@@ -1066,31 +1194,25 @@ function BooksQueueContent() {
                       />
                     </td>
                   )}
-                  <td className="px-2 py-2 text-xs text-slate-400">{row.transaction_date.slice(5)}</td>
+                  <td className={`${cellPad} text-xs tabular-nums text-slate-400 whitespace-nowrap`}>
+                    {row.transaction_date.slice(5)}
+                  </td>
                   {showBankColumn && (
-                    <td
-                      className="px-2 py-2 text-xs text-slate-400"
-                      title={row.account_name ?? undefined}
-                    >
-                      <span className="cell-truncate block max-w-[6rem]">
-                        {row.account_name || "—"}
-                      </span>
+                    <td className={`${cellPad} text-xs text-slate-500`} title={row.account_name ?? undefined}>
+                      <span className="block truncate">{row.account_name || "—"}</span>
                     </td>
                   )}
-                  <td className="px-2 py-2 min-w-0">
-                    <div className="cell-truncate font-medium text-white" title={row.merchant_name ?? undefined}>
-                      {row.merchant_name || "—"}
-                    </div>
+                  <td className={`${cellPad} min-w-0 max-w-[14rem]`}>
                     <div
-                      className="cell-truncate text-xs text-slate-500"
-                      title={row.description ?? row.payee_pattern ?? undefined}
+                      className="truncate font-medium text-white"
+                      title={[row.merchant_name, row.description].filter(Boolean).join(" · ") || undefined}
                     >
-                      {row.description || row.payee_pattern || "—"}
+                      {row.merchant_name || row.description || "—"}
                     </div>
                   </td>
-                  <td className="px-2 py-2" title={kind.title}>
+                  <td className={cellPad} title={kind.title}>
                     <span
-                      className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
+                      className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[10px] font-medium ${
                         row.qb_posting_type === "deposit" ||
                         (row.transaction_type === "credit" &&
                           row.qb_posting_type !== "refund" &&
@@ -1110,86 +1232,37 @@ function BooksQueueContent() {
                       {kind.type}
                     </span>
                   </td>
-                  <td className="px-2 py-2 min-w-0">
-                    {(status === "pending" || status === "needs_review") &&
-                    hasPostingAccounts(postingCoaGroups) ? (
-                      <select
-                        className={selectClass}
-                        value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
-                        disabled={rowBusy || Boolean(actionLoading)}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setAccountEdits((prev) => ({ ...prev, [row.id]: value }));
-                          if (value) void maybeSuggestParty(row, value);
-                        }}
-                      >
-                        <option value="">Select…</option>
-                        {postingCoaGroups.map((group) => (
-                          <optgroup key={group.label} label={group.label}>
-                            {group.items.map((a) => (
-                              <option key={a.qb_account_id} value={a.qb_account_id}>
-                                {a.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="cell-truncate block text-slate-300" title={row.qb_account_name ?? undefined}>
-                        {row.qb_account_name || "—"}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-2 min-w-0">
-                    {rowPartyType && (status === "pending" || status === "needs_review") ? (
-                      <div className="flex items-center gap-1">
-                        <select
-                          className={selectClass}
-                          value={partyEdits[row.id] ?? row.qb_party_id ?? ""}
-                          disabled={rowBusy || Boolean(actionLoading) || creatingPartyId === row.id}
-                          title={rowPartyType === "Vendor" ? "QuickBooks vendor" : "QuickBooks customer"}
-                          onChange={(e) =>
-                            setPartyEdits((prev) => ({ ...prev, [row.id]: e.target.value }))
-                          }
-                        >
-                          <option value="">—</option>
-                          {rowParties.map((p) => (
-                            <option key={p.qb_party_id} value={p.qb_party_id}>
-                              {p.display_name}
-                            </option>
-                          ))}
-                        </select>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-8 shrink-0 px-2 text-xs"
-                          disabled={rowBusy || Boolean(actionLoading) || creatingPartyId === row.id}
-                          loading={creatingPartyId === row.id}
-                          loadingLabel="…"
-                          title={`Create ${rowPartyType} in QuickBooks`}
-                          onClick={() => void handleCreateParty(row)}
-                        >
-                          +
-                        </Button>
-                      </div>
-                    ) : (
-                      <span
-                        className="cell-truncate block text-slate-300 text-xs"
-                        title={row.qb_party_name ?? undefined}
-                      >
-                        {row.qb_party_name || "—"}
-                      </span>
-                    )}
+                  <td className={cellPad}>
+                    <QuickBooksMappingCell
+                      row={row}
+                      status={status}
+                      rowBusy={rowBusy}
+                      actionLoading={actionLoading}
+                      rowAccountId={rowAccountId}
+                      rowPartyType={rowPartyType}
+                      rowParties={rowParties}
+                      postingCoaGroups={postingCoaGroups}
+                      accountEdits={accountEdits}
+                      partyEdits={partyEdits}
+                      creatingPartyId={creatingPartyId}
+                      onAccountChange={(value) => {
+                        setAccountEdits((prev) => ({ ...prev, [row.id]: value }));
+                        if (value) void maybeSuggestParty(row, value);
+                      }}
+                      onPartyChange={(value) =>
+                        setPartyEdits((prev) => ({ ...prev, [row.id]: value }))
+                      }
+                      onCreateParty={() => void handleCreateParty(row)}
+                    />
                   </td>
                   <td
-                    className={`px-2 py-2 text-right text-xs font-medium tabular-nums ${
+                    className={`${cellPad} text-right text-xs font-medium tabular-nums whitespace-nowrap ${
                       row.transaction_type === "credit" ? "text-green-400" : "text-white"
                     }`}
                   >
                     {signedAmount(row)}
                   </td>
-                  <td className="px-2 py-2">
+                  <td className={`${cellPad} w-10`}>
                     {status === "unclassified" ? (
                       <Button
                         size="sm"
