@@ -77,7 +77,11 @@ export default function BooksMappingsPage() {
     setError(null);
     try {
       const result = await syncCoa();
-      setMessage(`Synced ${result.synced} accounts from QuickBooks`);
+      const removedNote =
+        result.removed && result.removed > 0
+          ? `, removed ${result.removed} stale account(s)`
+          : "";
+      setMessage(`Synced ${result.synced} accounts from QuickBooks${removedNote}`);
       await load();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "COA sync failed");

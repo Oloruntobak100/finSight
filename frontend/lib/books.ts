@@ -136,7 +136,7 @@ export async function getQuickBooksStatus(): Promise<QuickBooksStatus> {
   return apiFetch<QuickBooksStatus>("/oauth/quickbooks/status");
 }
 
-export async function syncCoa(): Promise<{ synced: number; realm_id?: string }> {
+export async function syncCoa(): Promise<{ synced: number; removed?: number; realm_id?: string }> {
   return apiFetch("/books/coa/sync", { method: "POST" });
 }
 

@@ -19,6 +19,7 @@ class CoaListResponse(BaseModel):
 
 class CoaSyncResponse(BaseModel):
     synced: int
+    removed: int = 0
     realm_id: Optional[str] = None
     cached: Optional[bool] = None
 

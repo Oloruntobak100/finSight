@@ -333,6 +333,54 @@ async def qb_query(user_id: str, sql: str) -> dict[str, Any]:
     return await qb_company_get_json(user_id, f"/query?query={encoded}&minorversion=75")
 
 
+async def _purge_stale_coa(
+    user_id: str,
+    realm_id: str,
+    synced_ids: set[str],
+) -> int:
+    """Remove cached COA rows (and orphaned mappings) no longer present in QuickBooks."""
+    sb = get_supabase()
+
+    await run_db(
+        lambda: sb.table("qb_chart_of_accounts")
+        .delete()
+        .eq("user_id", user_id)
+        .neq("realm_id", realm_id)
+        .execute()
+    )
+
+    res = await run_db(
+        lambda: sb.table("qb_chart_of_accounts")
+        .select("qb_account_id")
+        .eq("user_id", user_id)
+        .eq("realm_id", realm_id)
+        .execute()
+    )
+    stale_ids = [
+        str(row["qb_account_id"])
+        for row in (res.data or [])
+        if str(row["qb_account_id"]) not in synced_ids
+    ]
+    if not stale_ids:
+        return 0
+
+    await run_db(
+        lambda ids=stale_ids: sb.table("qb_account_mappings")
+        .delete()
+        .eq("user_id", user_id)
+        .in_("qb_account_id", ids)
+        .execute()
+    )
+    await run_db(
+        lambda ids=stale_ids: sb.table("qb_chart_of_accounts")
+        .delete()
+        .eq("user_id", user_id)
+        .in_("qb_account_id", ids)
+        .execute()
+    )
+    return len(stale_ids)
+
+
 async def sync_chart_of_accounts(user_id: str) -> dict[str, Any]:
     account = await get_valid_account(user_id)
     if not account:
@@ -360,6 +408,7 @@ async def sync_chart_of_accounts(user_id: str) -> dict[str, Any]:
         for item in accounts
         if item.get("Id")
     ]
+    synced_ids = {row["qb_account_id"] for row in rows}
 
     sb = get_supabase()
     if rows:
@@ -369,7 +418,9 @@ async def sync_chart_of_accounts(user_id: str) -> dict[str, Any]:
             .execute()
         )
 
-    return {"synced": len(rows), "realm_id": realm_id}
+    removed = await _purge_stale_coa(user_id, realm_id, synced_ids)
+
+    return {"synced": len(rows), "removed": removed, "realm_id": realm_id}
 
 
 async def get_company_info(user_id: str) -> dict[str, Any]:
