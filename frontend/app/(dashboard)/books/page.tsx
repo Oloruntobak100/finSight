@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AlertCircle, BookOpen, RefreshCw } from "lucide-react";
+import { AlertCircle, BookOpen, ChevronDown, RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -160,6 +160,111 @@ function methodLabel(method: string | null | undefined) {
   return labels[method] ?? method;
 }
 
+type QueueActionId = "post" | "save" | "review" | "new" | "retry";
+
+interface QueueActionItem {
+  id: QueueActionId;
+  label: string;
+  hint?: string;
+}
+
+function buildQueueActions(status: QbSyncStatus, row: QueueItem): QueueActionItem[] {
+  const actions: QueueActionItem[] = [];
+
+  if (status === "pending" || status === "needs_review") {
+    actions.push(
+      { id: "post", label: "Post", hint: "Approve and post to QuickBooks" },
+      { id: "save", label: "Save", hint: "Approve and train without posting" }
+    );
+  }
+
+  if (status === "pending") {
+    actions.push(
+      { id: "review", label: "Move to Review" },
+      { id: "new", label: "Move to New" }
+    );
+  } else if (status === "needs_review") {
+    if (row.qb_error || row.qb_sync_status === "failed") {
+      actions.unshift({ id: "retry", label: "Retry post", hint: "Try posting again" });
+    }
+    actions.push({ id: "new", label: "Move to New" });
+  } else if (status === "auto_approved") {
+    actions.push(
+      { id: "review", label: "Move to Review" },
+      { id: "new", label: "Move to New" }
+    );
+  }
+
+  return actions;
+}
+
+function QueueRowActionMenu({
+  row,
+  status,
+  disabled,
+  open,
+  onOpenChange,
+  onAction,
+}: {
+  row: QueueItem;
+  status: QbSyncStatus;
+  disabled?: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAction: (action: QueueActionId) => void;
+}) {
+  const actions = buildQueueActions(status, row);
+  if (actions.length === 0) return null;
+
+  return (
+    <div className="relative">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-7 gap-1 px-2 text-xs"
+        disabled={disabled}
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+      >
+        Actions
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+      </Button>
+      {open && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-10 cursor-default"
+            aria-label="Close actions menu"
+            onClick={() => onOpenChange(false)}
+          />
+          <div
+            role="menu"
+            className="absolute right-0 z-20 mt-1 min-w-[11rem] overflow-hidden rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-xl shadow-black/40"
+          >
+            {actions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                role="menuitem"
+                className="flex w-full flex-col items-start px-3 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+                onClick={() => {
+                  onOpenChange(false);
+                  onAction(action.id);
+                }}
+              >
+                <span className="font-medium text-white">{action.label}</span>
+                {action.hint && <span className="text-[10px] text-slate-500">{action.hint}</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function BooksQueueContent() {
   const searchParams = useSearchParams();
   const rawStatus = searchParams.get("status") as QbSyncStatus | null;
@@ -191,6 +296,7 @@ function BooksQueueContent() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [classifying, setClassifying] = useState(false);
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
     7 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
@@ -343,6 +449,10 @@ function BooksQueueContent() {
     };
   }, [status, page, bootstrapped, qbConnected, refreshQueue]);
 
+  useEffect(() => {
+    setOpenActionMenuId(null);
+  }, [status, page]);
+
   async function handleApprove(row: QueueItem, post = true) {
     const accountId = accountEdits[row.id] || row.qb_account_id;
     if (!accountId) {
@@ -405,6 +515,26 @@ function BooksQueueContent() {
       setError(e instanceof ApiError ? e.message : "Could not move transaction");
     } finally {
       setActionLoading(null);
+    }
+  }
+
+  function handleRowAction(row: QueueItem, action: QueueActionId) {
+    switch (action) {
+      case "post":
+        void handleApprove(row, true);
+        break;
+      case "save":
+        void handleApprove(row, false);
+        break;
+      case "review":
+        void handleRevert(row.id, "needs_review");
+        break;
+      case "new":
+        void handleRevert(row.id, "unclassified");
+        break;
+      case "retry":
+        void handlePost(row.id);
+        break;
     }
   }
 
@@ -583,7 +713,7 @@ function BooksQueueContent() {
             <col className="w-[16%]" />
             <col className="w-[4.5rem]" />
             <col className="w-[6.5rem]" />
-            <col className="w-[3.5rem]" />
+            <col className="w-[5.5rem]" />
           </colgroup>
           <thead>
             <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
@@ -714,108 +844,26 @@ function BooksQueueContent() {
                     {signedAmount(row)}
                   </td>
                   <td className="px-2 py-2">
-                    <div className="flex flex-wrap gap-1">
-                      {(status === "pending" || status === "needs_review") && (
-                        <>
-                          <Button
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleApprove(row, true)}
-                          >
-                            Post
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 px-2 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleApprove(row, false)}
-                          >
-                            Save
-                          </Button>
-                        </>
-                      )}
-                      {status === "pending" && (
-                        <>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "needs_review")}
-                          >
-                            Review
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "unclassified")}
-                          >
-                            New
-                          </Button>
-                        </>
-                      )}
-                      {status === "needs_review" && (
-                        <>
-                          {(row.qb_error || row.qb_sync_status === "failed") && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 px-2 text-xs"
-                              disabled={actionLoading === row.id}
-                              onClick={() => handlePost(row.id)}
-                            >
-                              Retry
-                            </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "unclassified")}
-                          >
-                            New
-                          </Button>
-                        </>
-                      )}
-                      {status === "auto_approved" && (
-                        <>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "needs_review")}
-                          >
-                            Review
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-1.5 text-xs"
-                            disabled={actionLoading === row.id}
-                            onClick={() => handleRevert(row.id, "unclassified")}
-                          >
-                            New
-                          </Button>
-                        </>
-                      )}
-                      {status === "unclassified" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2 text-xs"
-                          disabled={actionLoading === row.id || classifying}
-                          onClick={() => refreshData({ classify: true })}
-                        >
-                          Map
-                        </Button>
-                      )}
-                    </div>
+                    {status === "unclassified" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        disabled={actionLoading === row.id || classifying}
+                        onClick={() => refreshData({ classify: true })}
+                      >
+                        Map
+                      </Button>
+                    ) : (
+                      <QueueRowActionMenu
+                        row={row}
+                        status={status}
+                        disabled={actionLoading === row.id}
+                        open={openActionMenuId === row.id}
+                        onOpenChange={(next) => setOpenActionMenuId(next ? row.id : null)}
+                        onAction={(action) => handleRowAction(row, action)}
+                      />
+                    )}
                   </td>
                 </tr>
               );
