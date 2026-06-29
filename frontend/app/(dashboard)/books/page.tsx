@@ -48,19 +48,35 @@ const STATUS_TAB_HINTS: Partial<Record<QbSyncStatus, string>> = {
     "Ready to post — select rows and Post all, or adjust accounts first.",
 };
 
-function postingTypeLabel(
-  type: string | null | undefined,
-  txnType?: string,
-  reason?: string | null
-) {
-  if (type === "refund") return "Refund";
-  if (type === "deposit") return "Income";
-  if (type === "fee") return "Fee";
-  if (type === "transfer") return "Transfer";
-  if (type === "expense") return "Expense";
-  if (type === "skip" && reason?.toLowerCase().includes("balance sheet")) return "Balance sheet";
-  if (txnType === "credit") return "Income";
-  return "—";
+function kindLabel(row: QueueItem) {
+  const postingType = row.qb_posting_type;
+  const reason = row.qb_confidence_reason;
+  const category = (row.category || "").trim();
+
+  let type: string;
+  if (postingType === "refund") {
+    type = "Refund";
+  } else if (postingType === "fee") {
+    type = "Fee";
+  } else if (postingType === "transfer") {
+    type = "Transfer";
+  } else if (postingType === "skip" && reason?.toLowerCase().includes("balance sheet")) {
+    type = "Balance sheet";
+  } else if (/transfer in/i.test(category)) {
+    type = "Transfer In";
+  } else if (/transfer out/i.test(category)) {
+    type = "Transfer Out";
+  } else {
+    type = row.transaction_type === "credit" ? "Credit" : "Debit";
+  }
+
+  const direction = directionLabel(row);
+  const title =
+    type === "Credit" || type === "Debit"
+      ? `${type} — map to the right QuickBooks account`
+      : `${direction} · ${type}`;
+
+  return { type, direction, title };
 }
 
 function coaForRow(
@@ -97,12 +113,6 @@ function directionLabel(row: QueueItem) {
 function signedAmount(row: QueueItem) {
   const incoming = row.transaction_type === "credit";
   return `${incoming ? "+" : "-"}${formatCurrency(row.amount, row.currency)}`;
-}
-
-function kindLabel(row: QueueItem) {
-  const type = postingTypeLabel(row.qb_posting_type, row.transaction_type, row.qb_confidence_reason);
-  const direction = directionLabel(row);
-  return { type, direction, title: `${direction} · ${type}` };
 }
 
 type QueueActionId = "post" | "save" | "review" | "new" | "retry" | "bulk-save" | "bulk-post";
