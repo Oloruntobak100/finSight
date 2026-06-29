@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
+import logging
+
 from app.auth.dependencies import CurrentUser
 from app.models.books import (
     ApproveRequest,
@@ -64,6 +66,7 @@ from app.services.quickbooks_service import get_connection_status, sync_chart_of
 from app.database import get_supabase, run_db
 
 router = APIRouter(prefix="/books", tags=["books"])
+logger = logging.getLogger(__name__)
 
 
 async def _ensure_qb_connected(user_id: str) -> None:
@@ -148,7 +151,10 @@ async def list_qb_parties(
 ) -> QbPartyListResponse:
     if fresh:
         await _ensure_qb_connected(user_id)
-        await sync_parties(user_id)
+        try:
+            await sync_parties(user_id)
+        except ValueError as exc:
+            logger.warning("Party sync degraded to cache for user %s: %s", user_id, exc)
     vendors = await list_vendors(user_id)
     customers = await list_customers(user_id)
     return _party_list_response(user_id, vendors, customers)

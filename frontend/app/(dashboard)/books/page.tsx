@@ -407,18 +407,15 @@ function BooksQueueContent() {
 
         if (!sum.readiness?.bank_connected) return;
 
-        const [coa, auto, queue, parties] = await Promise.all([
+        const [coa, auto, queue] = await Promise.all([
           listCoa(undefined, true),
           sum.automation ? Promise.resolve(null) : getAutomationSettings(),
           getBooksQueue(status, page, 20),
-          listQbParties(true),
         ]);
         if (cancelled) return;
 
         setPostingCoaGroups(buildPostingCoaGroups(coa.items));
         setFlatCoa(coa.items);
-        setQbVendors(parties.vendors);
-        setQbCustomers(parties.customers);
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
@@ -467,6 +464,37 @@ function BooksQueueContent() {
       cancelled = true;
     };
   }, [status, page, bootstrapped, qbConnected, refreshQueue]);
+
+  useEffect(() => {
+    if (!bootstrapped || !qbConnected) return;
+    if (status !== "pending" && status !== "needs_review") return;
+
+    let cancelled = false;
+    async function loadParties() {
+      try {
+        const parties = await listQbParties(true);
+        if (!cancelled) {
+          setQbVendors(parties.vendors);
+          setQbCustomers(parties.customers);
+        }
+      } catch {
+        try {
+          const cached = await listQbParties(false);
+          if (!cancelled) {
+            setQbVendors(cached.vendors);
+            setQbCustomers(cached.customers);
+          }
+        } catch {
+          /* QBO payee column stays empty until sync succeeds */
+        }
+      }
+    }
+
+    void loadParties();
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapped, qbConnected, status]);
 
   useEffect(() => {
     setOpenActionMenuId(null);

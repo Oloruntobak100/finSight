@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -14,6 +15,8 @@ from app.services.quickbooks_service import (
     qb_query,
 )
 from app.services.transaction_posting_utils import BALANCE_SHEET_ACCOUNT_TYPES
+
+logger = logging.getLogger(__name__)
 
 QbPartyType = Literal["Vendor", "Customer"]
 
@@ -81,28 +84,36 @@ def party_display_name_for_txn(txn: dict[str, Any]) -> str:
 
 async def list_vendors(user_id: str) -> list[dict[str, Any]]:
     sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("qb_vendors")
-        .select("*")
-        .eq("user_id", user_id)
-        .eq("active", True)
-        .order("display_name")
-        .execute()
-    )
-    return res.data or []
+    try:
+        res = await run_db(
+            lambda: sb.table("qb_vendors")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("active", True)
+            .order("display_name")
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        logger.warning("list_vendors failed for %s: %s", user_id, exc)
+        return []
 
 
 async def list_customers(user_id: str) -> list[dict[str, Any]]:
     sb = get_supabase()
-    res = await run_db(
-        lambda: sb.table("qb_customers")
-        .select("*")
-        .eq("user_id", user_id)
-        .eq("active", True)
-        .order("display_name")
-        .execute()
-    )
-    return res.data or []
+    try:
+        res = await run_db(
+            lambda: sb.table("qb_customers")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("active", True)
+            .order("display_name")
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        logger.warning("list_customers failed for %s: %s", user_id, exc)
+        return []
 
 
 async def _purge_stale_parties(
@@ -150,7 +161,10 @@ async def sync_vendors(user_id: str) -> dict[str, Any]:
         raise ValueError("QuickBooks not connected")
 
     realm_id = account["realm_id"]
-    data = await qb_query(user_id, "SELECT * FROM Vendor WHERE Active = true MAXRESULTS 1000")
+    data = await qb_query(
+        user_id,
+        "SELECT Id, DisplayName, CompanyName, Active FROM Vendor WHERE Active = true MAXRESULTS 1000",
+    )
     items = (data.get("QueryResponse") or {}).get("Vendor") or []
     if isinstance(items, dict):
         items = [items]
@@ -189,7 +203,10 @@ async def sync_customers(user_id: str) -> dict[str, Any]:
         raise ValueError("QuickBooks not connected")
 
     realm_id = account["realm_id"]
-    data = await qb_query(user_id, "SELECT * FROM Customer WHERE Active = true MAXRESULTS 1000")
+    data = await qb_query(
+        user_id,
+        "SELECT Id, DisplayName, CompanyName, Active FROM Customer WHERE Active = true MAXRESULTS 1000",
+    )
     items = (data.get("QueryResponse") or {}).get("Customer") or []
     if isinstance(items, dict):
         items = [items]
@@ -223,14 +240,32 @@ async def sync_customers(user_id: str) -> dict[str, Any]:
 
 
 async def sync_parties(user_id: str) -> dict[str, Any]:
-    vendors = await sync_vendors(user_id)
-    customers = await sync_customers(user_id)
+    vendors: dict[str, Any] = {"synced": 0, "removed": 0, "error": None}
+    customers: dict[str, Any] = {"synced": 0, "removed": 0, "error": None}
+
+    try:
+        vendors = await sync_vendors(user_id)
+    except ValueError as exc:
+        logger.warning("Vendor sync failed for %s: %s", user_id, exc)
+        vendors = {"synced": 0, "removed": 0, "error": str(exc)}
+
+    try:
+        customers = await sync_customers(user_id)
+    except ValueError as exc:
+        logger.warning("Customer sync failed for %s: %s", user_id, exc)
+        customers = {"synced": 0, "removed": 0, "error": str(exc)}
+
+    if vendors.get("error") and customers.get("error"):
+        raise ValueError(
+            f"QuickBooks party sync failed: {vendors['error']}; {customers['error']}"
+        )
+
     return {
         "vendors": vendors,
         "customers": customers,
-        "synced": vendors["synced"] + customers["synced"],
-        "removed": vendors["removed"] + customers["removed"],
-        "realm_id": vendors.get("realm_id"),
+        "synced": int(vendors.get("synced") or 0) + int(customers.get("synced") or 0),
+        "removed": int(vendors.get("removed") or 0) + int(customers.get("removed") or 0),
+        "realm_id": vendors.get("realm_id") or customers.get("realm_id"),
     }
 
 

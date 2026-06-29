@@ -298,9 +298,16 @@ async def _qb_company_request(
     url = f"{settings.quickbooks_base_url}/v3/company/{realm_id}{path}"
 
     last_error: Exception | None = None
+    retryable = (
+        httpx.RemoteProtocolError,
+        httpx.ConnectError,
+        httpx.ReadTimeout,
+        httpx.WriteTimeout,
+        httpx.NetworkError,
+    )
     for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=45.0, http2=False) as client:
                 headers = {
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
@@ -317,6 +324,12 @@ async def _qb_company_request(
                 if not res.is_success:
                     raise ValueError(f"QuickBooks API error ({res.status_code}): {res.text}")
                 return res.json()
+        except retryable as exc:
+            last_error = exc
+            if attempt < max_retries:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            raise ValueError(f"QuickBooks API connection error: {exc}") from exc
         except ValueError as exc:
             last_error = exc
             if "429" in str(exc) and attempt < max_retries:
