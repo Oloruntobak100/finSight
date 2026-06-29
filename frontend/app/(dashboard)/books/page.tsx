@@ -39,15 +39,6 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "posted", label: "Posted" },
 ];
 
-const STATUS_TAB_HINTS: Partial<Record<QbSyncStatus, string>> = {
-  unclassified:
-    "Not categorized yet — not enough detail, or training has not started. Refresh or map manually.",
-  needs_review:
-    "P&L, loans, transfers, equity — pick the QuickBooks account for each row, then Save or Post.",
-  pending:
-    "Approved and ready to post — select rows and Post all, or adjust accounts first.",
-};
-
 function kindLabel(row: QueueItem) {
   const postingType = row.qb_posting_type;
   const reason = row.qb_confidence_reason;
@@ -74,14 +65,7 @@ function kindLabel(row: QueueItem) {
   }
 
   const direction = directionLabel(row);
-  const title =
-    type === "Credit" || type === "Debit"
-      ? `${type} — map to income, expense, liability, equity, or bank`
-      : type === "Balance sheet"
-        ? `${direction} · ${type} — loan, equity, or asset account`
-        : type === "Transfer"
-          ? `${direction} · ${type} — select the other bank account`
-          : `${direction} · ${type}`;
+  const title = `${direction} · ${type}`;
 
   return { type, direction, title };
 }
@@ -491,33 +475,23 @@ function BooksQueueContent() {
 
     try {
       const result = await approveBulk({ items: bulkItems, post });
-      const similar = result.similar_updated ?? 0;
       const failed = result.failed ?? 0;
       const approved = result.approved ?? 0;
 
       if (failed > 0) {
         const detail = result.errors[0]?.error;
-        setInfo(
-          post
-            ? `Posted ${approved}, failed ${failed}${similar > 0 ? ` · ${similar} similar updated` : ""}`
-            : `Saved ${approved}, failed ${failed}${similar > 0 ? ` · ${similar} similar updated` : ""}`
-        );
+        setInfo(post ? `Posted ${approved}, failed ${failed}` : `Saved ${approved}, failed ${failed}`);
         if (detail) setError(detail);
-      } else if (post) {
-        setInfo(
-          similar > 0
-            ? `Posted ${approved} to QuickBooks — ${similar} similar transaction${similar === 1 ? "" : "s"} updated`
-            : `Posted ${approved} transaction${approved === 1 ? "" : "s"} to QuickBooks`
-        );
       } else {
         setInfo(
-          similar > 0
-            ? `Training saved for ${approved} — ${similar} similar transaction${similar === 1 ? "" : "s"} pre-filled`
+          post
+            ? `Posted ${approved} transaction${approved === 1 ? "" : "s"}`
             : `Training saved for ${approved} transaction${approved === 1 ? "" : "s"}`
         );
       }
 
       setSelected(new Set());
+      setAccountEdits({});
       await refreshData();
     } catch (e) {
       setInfo(null);
@@ -541,20 +515,16 @@ function BooksQueueContent() {
     setInfo(post ? "Posting to QuickBooks…" : "Saving training…");
     try {
       const result = await approveTransaction(row.id, accountId, post);
-      const similar = result.similar_updated ?? 0;
       if (post) {
-        setInfo(
-          similar > 0
-            ? `Posted to QuickBooks — ${similar} similar transaction${similar === 1 ? "" : "s"} updated`
-            : "Approved and posted to QuickBooks"
-        );
+        setInfo("Posted to QuickBooks");
       } else {
-        setInfo(
-          similar > 0
-            ? `Training saved — ${similar} similar transaction${similar === 1 ? "" : "s"} pre-filled`
-            : "Training saved — similar payees will be suggested next"
-        );
+        setInfo("Training saved");
       }
+      setAccountEdits((prev) => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
       await refreshData();
     } catch (e) {
       setInfo(null);
@@ -749,7 +719,7 @@ function BooksQueueContent() {
             : actionKind === "bulk-post"
               ? "Posting selected transactions to QuickBooks…"
               : actionKind === "save"
-                ? "Saving training and updating similar payees…"
+                ? "Saving training…"
                 : actionKind === "post" || actionKind === "retry"
                   ? "Posting to QuickBooks…"
                   : "Updating queue…"}
@@ -781,12 +751,6 @@ function BooksQueueContent() {
           );
         })}
       </div>
-
-      {STATUS_TAB_HINTS[status] && (
-        <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2 text-sm text-slate-300">
-          {STATUS_TAB_HINTS[status]}
-        </div>
-      )}
 
       {classifying && (
         <div className="rounded-lg border border-blue-500/20 bg-blue-950/20 px-3 py-2 text-sm text-blue-200">

@@ -17,8 +17,10 @@ from app.services.fingerprint_service import (
     fingerprint_confidence_reason,
     fingerprint_is_trained,
     fingerprint_match_confidence,
+    fingerprint_propagation_confidence,
     lookup_fingerprint,
     lookup_fingerprint_by_payee,
+    payee_pattern_for_row,
     recalculate_fingerprint_confidence,
     touch_fingerprint_seen,
     upsert_fingerprint_from_decision,
@@ -515,7 +517,7 @@ def classify_transaction(
         "qb_suggestion_method": method,
         "qb_confidence_reason": reason,
         "fingerprint_id": fingerprint_id,
-        "payee_pattern": txn.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern"),
+        "payee_pattern": payee_pattern_for_row(txn),
     }
 
 
@@ -1047,16 +1049,20 @@ async def propagate_payee_suggestions(
     txn: dict[str, Any],
     fp_row: dict[str, Any],
     *,
-    exclude_transaction_id: str,
+    exclude_transaction_id: str | None = None,
+    exclude_transaction_ids: set[str] | None = None,
 ) -> int:
     """Apply a trained payee fingerprint to similar rows still in New/Review."""
     if not fingerprint_is_trained(fp_row):
         return 0
 
-    payee = fp_row.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern")
-    merchant = (txn.get("merchant_name") or "").strip()
-    if not payee:
+    payee = fp_row.get("payee_pattern") or payee_pattern_for_row(txn)
+    if not payee or payee == "unknown":
         return 0
+
+    exclude_ids = set(exclude_transaction_ids or [])
+    if exclude_transaction_id:
+        exclude_ids.add(exclude_transaction_id)
 
     sb = get_supabase()
     mappings = await get_mappings(user_id)
@@ -1064,37 +1070,22 @@ async def propagate_payee_suggestions(
     coa_ids = _coa_ids(coa)
     automation = await get_user_automation(user_id)
 
-    res = await run_db(
-        lambda: sb.table("transactions")
-        .select("*")
-        .eq("user_id", user_id)
-        .in_("source_provider", list(BANK_PROVIDERS))
-        .eq("payee_pattern", payee)
-        .in_("qb_sync_status", ["needs_review", "unclassified"])
-        .neq("id", exclude_transaction_id)
-        .limit(500)
-        .execute()
+    candidates = await _payee_propagation_candidates(
+        user_id,
+        payee,
+        exclude_ids=exclude_ids,
     )
-    candidates: dict[str, dict[str, Any]] = {r["id"]: r for r in (res.data or [])}
-
-    if merchant:
-        extra = await run_db(
-            lambda: sb.table("transactions")
-            .select("*")
-            .eq("user_id", user_id)
-            .in_("source_provider", list(BANK_PROVIDERS))
-            .eq("merchant_name", merchant)
-            .in_("qb_sync_status", ["needs_review", "unclassified"])
-            .neq("id", exclude_transaction_id)
-            .limit(200)
-            .execute()
-        )
-        for row in extra.data or []:
-            candidates[row["id"]] = row
 
     updates: list[tuple[str, dict[str, Any]]] = []
     for row in candidates.values():
-        patch = _fingerprint_prefill_patch(row, fp_row, mappings, coa_ids, automation)
+        patch = _fingerprint_prefill_patch(
+            row,
+            fp_row,
+            mappings,
+            coa_ids,
+            automation,
+            propagation=True,
+        )
         if patch:
             updates.append((row["id"], patch))
 
@@ -1302,6 +1293,7 @@ async def approve_transactions_bulk(
     similar_updated = 0
     errors: list[dict[str, str]] = []
     propagated_payees: set[str] = set()
+    approved_ids: set[str] = set()
 
     for tid, acct_id in work:
         try:
@@ -1313,6 +1305,7 @@ async def approve_transactions_bulk(
                 propagate_similar=False,
             )
             approved += 1
+            approved_ids.add(tid)
         except ValueError as exc:
             errors.append({"transaction_id": tid, "error": str(exc)})
 
@@ -1331,8 +1324,8 @@ async def approve_transactions_bulk(
         txn = txn_res.data
         if not txn:
             continue
-        payee = txn.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern")
-        if not payee or payee in propagated_payees:
+        payee = payee_pattern_for_row(txn)
+        if not payee or payee == "unknown" or payee in propagated_payees:
             continue
         fp_row = await lookup_fingerprint_by_payee(user_id, payee)
         if fp_row:
@@ -1340,7 +1333,7 @@ async def approve_transactions_bulk(
                 user_id,
                 txn,
                 fp_row,
-                exclude_transaction_id=tid,
+                exclude_transaction_ids=approved_ids,
             )
             propagated_payees.add(payee)
 
@@ -1652,6 +1645,48 @@ async def _coa_validated_for_accounts(
 
 
 PROPAGATE_BATCH_SIZE = 25
+PROPAGATE_SCAN_BATCH = 500
+PROPAGATE_SCAN_MAX = 5000
+
+
+async def _payee_propagation_candidates(
+    user_id: str,
+    payee: str,
+    *,
+    exclude_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Rows in New/Review that share a payee (stored or derived from narration)."""
+    if not payee or payee == "unknown":
+        return {}
+
+    sb = get_supabase()
+    candidates: dict[str, dict[str, Any]] = {}
+    offset = 0
+
+    while offset < PROPAGATE_SCAN_MAX:
+        res = await run_db(
+            lambda off=offset: sb.table("transactions")
+            .select("*")
+            .eq("user_id", user_id)
+            .in_("source_provider", list(BANK_PROVIDERS))
+            .in_("qb_sync_status", ["needs_review", "unclassified"])
+            .order("transaction_date", desc=True)
+            .range(off, off + PROPAGATE_SCAN_BATCH - 1)
+            .execute()
+        )
+        rows = res.data or []
+        for row in rows:
+            row_id = str(row.get("id") or "")
+            if not row_id or row_id in exclude_ids:
+                continue
+            if payee_pattern_for_row(row) != payee:
+                continue
+            candidates[row_id] = row
+        if len(rows) < PROPAGATE_SCAN_BATCH:
+            break
+        offset += PROPAGATE_SCAN_BATCH
+
+    return candidates
 
 
 def _fingerprint_prefill_patch(
@@ -1660,6 +1695,8 @@ def _fingerprint_prefill_patch(
     mappings: list[dict[str, Any]],
     coa_ids: set[str],
     automation: dict[str, Any] | None,
+    *,
+    propagation: bool = False,
 ) -> dict[str, Any] | None:
     kind = detect_posting_kind(txn)
     if kind == "reversal":
@@ -1672,7 +1709,12 @@ def _fingerprint_prefill_patch(
     if not account_id or not _account_valid(coa_ids, account_id):
         return None
 
-    confidence = fingerprint_match_confidence(txn, fp_row)
+    if propagation:
+        if payee_pattern_for_row(txn) != fp_row.get("payee_pattern"):
+            return None
+        confidence = fingerprint_propagation_confidence(txn, fp_row)
+    else:
+        confidence = fingerprint_match_confidence(txn, fp_row)
     if confidence < CONFIDENCE_FINGERPRINT_MIN:
         return None
 
@@ -1680,13 +1722,18 @@ def _fingerprint_prefill_patch(
     bank_map = _mapping_lookup(mappings, "bank_account", str(bank_id)) if bank_id else None
     payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
 
-    status = _resolve_status(
-        qb_account_id=account_id,
-        payment_account_id=payment_account_id,
-        confidence=confidence,
-        method="fingerprint",
-        automation=automation,
-    )
+    if propagation and account_id and payment_account_id:
+        status: QbSyncStatus = "pending"
+    else:
+        status = _resolve_status(
+            qb_account_id=account_id,
+            payment_account_id=payment_account_id,
+            confidence=confidence,
+            method="fingerprint",
+            automation=automation,
+        )
+
+    row_payee = payee_pattern_for_row(txn)
 
     return {
         "qb_account_id": account_id,
@@ -1699,7 +1746,7 @@ def _fingerprint_prefill_patch(
         "qb_sync_status": status,
         "qb_posting_type": posting_type_for_kind(fp_kind or kind),
         "posting_intent": posting_kind_to_intent(fp_kind or kind),
-        "payee_pattern": txn.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern"),
+        "payee_pattern": row_payee,
     }
 
 

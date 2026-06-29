@@ -148,6 +148,14 @@ async def lookup_fingerprint(user_id: str, fp: dict[str, str]) -> dict[str, Any]
     return None
 
 
+def payee_pattern_for_row(txn: dict[str, Any]) -> str:
+    """Stable payee key for a transaction row (stored or derived)."""
+    stored = (txn.get("payee_pattern") or "").strip()
+    if stored:
+        return stored
+    return extract_fingerprint(txn).get("payee_pattern") or "unknown"
+
+
 def fingerprint_match_confidence(txn: dict[str, Any], fp_row: dict[str, Any]) -> float:
     """Exact dimensional matches keep full confidence; payee-only matches stay in Review."""
     fp_txn = extract_fingerprint(txn)
@@ -160,6 +168,16 @@ def fingerprint_match_confidence(txn: dict[str, Any], fp_row: dict[str, Any]) ->
     if exact:
         return raw
     return min(raw, 0.84)
+
+
+def fingerprint_propagation_confidence(txn: dict[str, Any], fp_row: dict[str, Any]) -> float:
+    """After explicit training, apply the payee fingerprint at full trained confidence."""
+    if payee_pattern_for_row(txn) != fp_row.get("payee_pattern"):
+        return 0.0
+    raw = float(fp_row.get("confidence") or 0)
+    if int(fp_row.get("recurrence_count") or 0) >= 1:
+        return max(raw, FINGERPRINT_MATCH_MIN)
+    return raw
 
 
 def _confidence_from_decisions(decisions: list[dict[str, Any]]) -> float:
