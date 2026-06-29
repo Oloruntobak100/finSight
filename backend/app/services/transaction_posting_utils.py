@@ -10,7 +10,33 @@ from app.services.transfer_utils import is_transfer
 PostingKind = Literal[
     "expense", "income", "transfer", "fee", "reversal", "balance_sheet", "refund"
 ]
-PostingType = Literal["expense", "deposit", "fee", "transfer", "skip", "refund"]
+PostingType = Literal["expense", "deposit", "fee", "transfer", "balance_sheet", "refund"]
+PostingEntity = Literal["deposit", "purchase", "transfer"]
+
+PL_ACCOUNT_TYPES = frozenset(
+    {
+        "income",
+        "other income",
+        "expense",
+        "other expense",
+        "cost of goods sold",
+    }
+)
+
+BALANCE_SHEET_ACCOUNT_TYPES = frozenset(
+    {
+        "other current liability",
+        "long term liability",
+        "accounts payable",
+        "credit card",
+        "equity",
+        "other current asset",
+        "fixed asset",
+        "accounts receivable",
+    }
+)
+
+POSTABLE_ACCOUNT_TYPES = PL_ACCOUNT_TYPES | BALANCE_SHEET_ACCOUNT_TYPES | frozenset({"bank"})
 
 # Mono metadata slugs that are balance-sheet movements, not P&L
 MONO_BALANCE_SHEET_SLUGS = frozenset(
@@ -49,6 +75,16 @@ EQUITY_TEXT_MARKERS = (
     "owners draw",
     "shareholder loan",
     "director loan",
+)
+
+LOAN_TEXT_MARKERS = (
+    "loan disbursement",
+    "loan disburs",
+    "loan credit",
+    "loan proceeds",
+    "facility disbursement",
+    "term loan",
+    "mortgage disbursement",
 )
 
 FEE_TEXT_MARKERS = (
@@ -122,7 +158,9 @@ def is_balance_sheet_movement(
         return True
 
     text = _text_blob(category or txn.get("category"), merchant_name, description)
-    return any(marker in text for marker in EQUITY_TEXT_MARKERS)
+    if any(marker in text for marker in EQUITY_TEXT_MARKERS):
+        return True
+    return any(marker in text for marker in LOAN_TEXT_MARKERS)
 
 
 def is_vendor_refund(
@@ -237,13 +275,34 @@ def posting_kind_for_coa_account(
 ) -> PostingKind:
     """Infer posting kind when the user picks a QuickBooks account directly."""
     at = (account_type or "").strip().lower()
-    if at == "income":
+    if at in ("income", "other income"):
         return "income"
     if at in ("expense", "other expense", "cost of goods sold"):
         return "expense"
+    if at == "bank":
+        return "transfer"
+    if at in BALANCE_SHEET_ACCOUNT_TYPES:
+        return "balance_sheet"
     if transaction_type == "credit":
         return "income"
     return "expense"
+
+
+def is_postable_account_type(account_type: str | None) -> bool:
+    return (account_type or "").strip().lower() in POSTABLE_ACCOUNT_TYPES
+
+
+def resolve_posting_entity(
+    transaction_type: str | None,
+    offset_account_type: str | None,
+) -> PostingEntity:
+    """Choose QuickBooks entity: Deposit, Purchase, or Transfer."""
+    at = (offset_account_type or "").strip().lower()
+    if at == "bank":
+        return "transfer"
+    if (transaction_type or "").lower() == "credit":
+        return "deposit"
+    return "purchase"
 
 
 def posting_type_for_kind(kind: PostingKind) -> PostingType:
@@ -254,11 +313,33 @@ def posting_type_for_kind(kind: PostingKind) -> PostingType:
     if kind == "transfer":
         return "transfer"
     if kind == "reversal":
-        return "skip"
+        return "balance_sheet"
     if kind == "balance_sheet":
-        return "skip"
+        return "balance_sheet"
     if kind == "refund":
         return "refund"
+    return "expense"
+
+
+def posting_type_for_approval(
+    *,
+    transaction_type: str | None,
+    offset_account_type: str | None,
+    detected_kind: PostingKind,
+) -> PostingType:
+    """Persisted qb_posting_type after the user picks an account."""
+    if detected_kind == "fee":
+        return "fee"
+    if detected_kind == "refund":
+        return "refund"
+    entity = resolve_posting_entity(transaction_type, offset_account_type)
+    if entity == "transfer":
+        return "transfer"
+    at = (offset_account_type or "").strip().lower()
+    if at in BALANCE_SHEET_ACCOUNT_TYPES:
+        return "balance_sheet"
+    if entity == "deposit":
+        return "deposit"
     return "expense"
 
 

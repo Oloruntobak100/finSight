@@ -333,6 +333,7 @@ def test_balance_sheet_goes_to_review_queue():
     }
     result = classify_transaction(txn, [], {}, _coa(), _coa_ids())
     assert result["qb_sync_status"] == "needs_review"
+    assert result["qb_posting_type"] == "balance_sheet"
     assert result["qb_suggestion_method"] == "auto_detect"
     assert "map to" in (result["qb_confidence_reason"] or "").lower()
 

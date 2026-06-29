@@ -30,13 +30,16 @@ from app.services.posting_rag_service import (
 )
 from app.services.quickbooks_service import qb_company_post_json, sync_chart_of_accounts
 from app.services.transaction_posting_utils import (
+    BALANCE_SHEET_ACCOUNT_TYPES,
     PostingKind,
     default_fee_account_names,
     detect_posting_kind,
     is_bank_fee,
     posting_kind_for_coa_account,
     posting_kind_to_intent,
+    posting_type_for_approval,
     posting_type_for_kind,
+    resolve_posting_entity,
 )
 from app.services.bank_transaction_scope import (
     BANK_PROVIDERS,
@@ -129,8 +132,13 @@ def _auto_detect_reason(txn: dict[str, Any], kind: PostingKind) -> str:
     bank_suffix = f" via {bank}" if bank else ""
 
     if kind == "balance_sheet":
-        label = category or "Cash or loan movement"
-        return f"{direction} — {label}{bank_suffix}; map to the QuickBooks account that fits"
+        label = category or "Balance sheet movement"
+        return f"{direction} — {label}{bank_suffix}; map to loan, equity, or asset account"
+    if kind == "transfer":
+        return (
+            f"{direction} — inter-account transfer{bank_suffix}; "
+            "select the other QuickBooks bank account"
+        )
     if kind == "reversal":
         return f"Reversal — {category or 'bank reversal'}; match to the original category"
     return (
@@ -270,11 +278,18 @@ def _mapping_lookup(mappings: list[dict[str, Any]], mapping_type: str, key: str)
 
 
 def _accounts_for_kind(coa: list[dict[str, Any]], kind: PostingKind) -> list[dict[str, Any]]:
+    def _type(row: dict[str, Any]) -> str:
+        return (row.get("account_type") or "").strip().lower()
+
     if kind == "income":
-        return [a for a in coa if a.get("account_type") == "Income"]
+        return [a for a in coa if _type(a) in ("income", "other income")]
     if kind in ("expense", "fee", "refund"):
-        return [a for a in coa if a.get("account_type") == "Expense"]
-    return [a for a in coa if a.get("account_type") == "Expense"]
+        return [a for a in coa if _type(a) in ("expense", "other expense", "cost of goods sold")]
+    if kind == "balance_sheet":
+        return [a for a in coa if _type(a) in BALANCE_SHEET_ACCOUNT_TYPES]
+    if kind == "transfer":
+        return [a for a in coa if _type(a) == "bank"]
+    return []
 
 
 def _default_fee_account(coa: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1141,12 +1156,17 @@ async def approve_transaction(
         coa_row.get("account_type"),
         transaction_type=txn.get("transaction_type"),
     )
+    detected_kind = detect_posting_kind(txn)
 
     if not payment_account_id:
         account_id = txn.get("account_id")
         mappings = await get_mappings(user_id)
         bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
         payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
+
+    if approved_kind == "transfer":
+        if str(final_account_id) == str(payment_account_id or ""):
+            raise ValueError("Transfer requires a different QuickBooks bank account")
 
     if payment_account_id and not _account_valid(coa_ids, payment_account_id):
         coa, coa_ids = await _coa_validated_for_accounts(user_id, final_account_id, payment_account_id)
@@ -1207,7 +1227,11 @@ async def approve_transaction(
         "qb_payment_account_id": payment_account_id,
         "fingerprint_id": fp_row.get("id"),
         "posting_intent": posting_kind_to_intent(approved_kind),
-        "qb_posting_type": posting_type_for_kind(approved_kind),
+        "qb_posting_type": posting_type_for_approval(
+            transaction_type=txn.get("transaction_type"),
+            offset_account_type=coa_row.get("account_type"),
+            detected_kind=detected_kind,
+        ),
         "qb_suggestion_method": "manual",
         "qb_sync_status": "pending",
     }
@@ -1422,6 +1446,24 @@ def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_transfer_payload(txn: dict[str, Any]) -> dict[str, Any]:
+    amount = abs(float(txn.get("amount") or 0))
+    txn_date = str(txn.get("transaction_date"))
+    feed_bank = str(txn["qb_payment_account_id"])
+    other_bank = str(txn["qb_account_id"])
+    if (txn.get("transaction_type") or "").lower() == "credit":
+        from_ref, to_ref = other_bank, feed_bank
+    else:
+        from_ref, to_ref = feed_bank, other_bank
+    return {
+        "TxnDate": txn_date,
+        "Amount": amount,
+        "PrivateNote": f"FinSight:{txn['id']}",
+        "FromAccountRef": {"value": from_ref},
+        "ToAccountRef": {"value": to_ref},
+    }
+
+
 async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool = False) -> dict[str, Any]:
     sb = get_supabase()
 
@@ -1463,8 +1505,25 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
         label="QuickBooks account",
     )
 
+    coa_row = next(
+        (r for r in coa if r.get("qb_account_id") == txn.get("qb_account_id")),
+        None,
+    )
+    offset_type = (coa_row or {}).get("account_type")
     posting_type = txn.get("qb_posting_type") or "expense"
-    if posting_type in ("deposit", "refund"):
+    entity = resolve_posting_entity(txn.get("transaction_type"), offset_type)
+    if posting_type == "transfer":
+        entity = "transfer"
+    elif posting_type == "refund":
+        entity = "deposit"
+
+    if entity == "transfer":
+        if str(txn.get("qb_account_id")) == str(txn.get("qb_payment_account_id")):
+            raise ValueError("Transfer requires two different bank accounts")
+        payload = _build_transfer_payload(txn)
+        api_path = "/transfer?minorversion=75"
+        entity_type = "Transfer"
+    elif entity == "deposit":
         payload = _build_deposit_payload(txn)
         api_path = "/deposit?minorversion=75"
         entity_type = "Deposit"
@@ -1603,7 +1662,10 @@ def _fingerprint_prefill_patch(
     automation: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     kind = detect_posting_kind(txn)
-    if kind in ("transfer", "reversal", "balance_sheet"):
+    if kind == "reversal":
+        return None
+    fp_kind = fp_row.get("posting_kind")
+    if kind in ("transfer", "balance_sheet") and fp_kind != kind:
         return None
 
     account_id = str(fp_row.get("qb_account_id") or "")
@@ -1635,6 +1697,8 @@ def _fingerprint_prefill_patch(
         "qb_confidence": round(confidence, 2),
         "qb_confidence_reason": fingerprint_confidence_reason(fp_row),
         "qb_sync_status": status,
+        "qb_posting_type": posting_type_for_kind(fp_kind or kind),
+        "posting_intent": posting_kind_to_intent(fp_kind or kind),
         "payee_pattern": txn.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern"),
     }
 

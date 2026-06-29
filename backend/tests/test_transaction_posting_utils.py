@@ -6,7 +6,11 @@ from app.services.transaction_posting_utils import (
     is_bank_fee,
     is_reversal,
     is_vendor_refund,
+    posting_kind_for_coa_account,
     posting_kind_to_intent,
+    posting_type_for_approval,
+    posting_type_for_kind,
+    resolve_posting_entity,
 )
 
 
@@ -154,3 +158,55 @@ def test_posting_kind_to_intent_refund():
 
 def test_posting_kind_to_intent_balance_sheet():
     assert posting_kind_to_intent("balance_sheet") == "transfer"
+
+
+def test_posting_type_for_kind_balance_sheet():
+    assert posting_type_for_kind("balance_sheet") == "balance_sheet"
+
+
+def test_loan_liability_credit_posts_as_deposit():
+    assert resolve_posting_entity("credit", "Long Term Liability") == "deposit"
+    assert (
+        posting_type_for_approval(
+            transaction_type="credit",
+            offset_account_type="Long Term Liability",
+            detected_kind="balance_sheet",
+        )
+        == "balance_sheet"
+    )
+
+
+def test_loan_repayment_debit_posts_as_purchase():
+    assert resolve_posting_entity("debit", "Long Term Liability") == "purchase"
+    assert (
+        posting_type_for_approval(
+            transaction_type="debit",
+            offset_account_type="Long Term Liability",
+            detected_kind="balance_sheet",
+        )
+        == "balance_sheet"
+    )
+
+
+def test_bank_offset_is_transfer():
+    assert posting_kind_for_coa_account("Bank", transaction_type="debit") == "transfer"
+    assert resolve_posting_entity("debit", "Bank") == "transfer"
+    assert (
+        posting_type_for_approval(
+            transaction_type="debit",
+            offset_account_type="Bank",
+            detected_kind="transfer",
+        )
+        == "transfer"
+    )
+
+
+def test_loan_text_marker_is_balance_sheet():
+    kind = detect_posting_kind(
+        {
+            "transaction_type": "credit",
+            "category": "Other",
+            "description": "Loan disbursement from facility",
+        }
+    )
+    assert kind == "balance_sheet"

@@ -43,9 +43,9 @@ const STATUS_TAB_HINTS: Partial<Record<QbSyncStatus, string>> = {
   unclassified:
     "Not categorized yet — not enough detail, or training has not started. Refresh or map manually.",
   needs_review:
-    "Best guess from the transaction — pick QB accounts, select rows, then Save all or Post all.",
+    "P&L, loans, transfers, equity — pick the QuickBooks account for each row, then Save or Post.",
   pending:
-    "Ready to post — select rows and Post all, or adjust accounts first.",
+    "Approved and ready to post — select rows and Post all, or adjust accounts first.",
 };
 
 function kindLabel(row: QueueItem) {
@@ -60,7 +60,10 @@ function kindLabel(row: QueueItem) {
     type = "Fee";
   } else if (postingType === "transfer") {
     type = "Transfer";
-  } else if (postingType === "skip" && reason?.toLowerCase().includes("balance sheet")) {
+  } else if (
+    postingType === "balance_sheet" ||
+    (postingType === "skip" && reason?.toLowerCase().includes("balance sheet"))
+  ) {
     type = "Balance sheet";
   } else if (/transfer in/i.test(category)) {
     type = "Transfer In";
@@ -73,23 +76,49 @@ function kindLabel(row: QueueItem) {
   const direction = directionLabel(row);
   const title =
     type === "Credit" || type === "Debit"
-      ? `${type} — map to the right QuickBooks account`
-      : `${direction} · ${type}`;
+      ? `${type} — map to income, expense, liability, equity, or bank`
+      : type === "Balance sheet"
+        ? `${direction} · ${type} — loan, equity, or asset account`
+        : type === "Transfer"
+          ? `${direction} · ${type} — select the other bank account`
+          : `${direction} · ${type}`;
 
   return { type, direction, title };
 }
 
-const POSTING_ACCOUNT_TYPES = new Set([
-  "Income",
-  "Expense",
-  "Other Expense",
-  "Cost of Goods Sold",
-]);
+type CoaGroup = { label: string; items: CoaAccount[] };
 
-function buildPostingCoa(accounts: CoaAccount[]): CoaAccount[] {
-  return accounts
-    .filter((a) => a.account_type && POSTING_ACCOUNT_TYPES.has(a.account_type))
-    .sort((a, b) => a.name.localeCompare(b.name));
+const COA_GROUP_ORDER: { label: string; types: string[] }[] = [
+  { label: "Income", types: ["Income", "Other Income"] },
+  { label: "Expenses", types: ["Expense", "Other Expense", "Cost of Goods Sold"] },
+  {
+    label: "Liabilities & cards",
+    types: ["Other Current Liability", "Long Term Liability", "Accounts Payable", "Credit Card"],
+  },
+  { label: "Equity", types: ["Equity"] },
+  {
+    label: "Assets",
+    types: ["Other Current Asset", "Fixed Asset", "Accounts Receivable"],
+  },
+  { label: "Banks — transfers", types: ["Bank"] },
+];
+
+const POSTABLE_ACCOUNT_TYPES = new Set(COA_GROUP_ORDER.flatMap((g) => g.types));
+
+function buildPostingCoaGroups(accounts: CoaAccount[]): CoaGroup[] {
+  const postable = accounts.filter(
+    (a) => a.account_type && POSTABLE_ACCOUNT_TYPES.has(a.account_type),
+  );
+  return COA_GROUP_ORDER.map(({ label, types }) => ({
+    label,
+    items: postable
+      .filter((a) => types.includes(a.account_type!))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  })).filter((g) => g.items.length > 0);
+}
+
+function hasPostingAccounts(groups: CoaGroup[]): boolean {
+  return groups.some((g) => g.items.length > 0);
 }
 
 const selectClass =
@@ -233,7 +262,7 @@ function BooksQueueContent() {
   const [qbEnvironment, setQbEnvironment] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<BooksReadiness | null>(null);
   const [items, setItems] = useState<QueueItem[]>([]);
-  const [postingCoa, setPostingCoa] = useState<CoaAccount[]>([]);
+  const [postingCoaGroups, setPostingCoaGroups] = useState<CoaGroup[]>([]);
   const [accountEdits, setAccountEdits] = useState<Record<string, string>>({});
   const [totalPages, setTotalPages] = useState(1);
   const [summary, setSummary] = useState<Record<string, number>>({});
@@ -351,7 +380,7 @@ function BooksQueueContent() {
         ]);
         if (cancelled) return;
 
-        setPostingCoa(buildPostingCoa(coa.items));
+        setPostingCoaGroups(buildPostingCoaGroups(coa.items));
         if (auto) setAutomation(auto);
         setItems(queue.items);
         setTotalPages(queue.total_pages);
@@ -932,7 +961,8 @@ function BooksQueueContent() {
                       className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
                         row.qb_posting_type === "deposit" ||
                         (row.transaction_type === "credit" &&
-                          row.qb_posting_type !== "refund")
+                          row.qb_posting_type !== "refund" &&
+                          row.qb_posting_type !== "balance_sheet")
                           ? "bg-emerald-900/40 text-emerald-300"
                           : row.qb_posting_type === "refund"
                             ? "bg-violet-900/40 text-violet-300"
@@ -940,7 +970,9 @@ function BooksQueueContent() {
                               ? "bg-amber-900/40 text-amber-300"
                               : row.qb_posting_type === "transfer"
                                 ? "bg-slate-800 text-slate-400"
-                                : "bg-blue-900/40 text-blue-300"
+                                : row.qb_posting_type === "balance_sheet"
+                                  ? "bg-cyan-900/40 text-cyan-300"
+                                  : "bg-blue-900/40 text-blue-300"
                       }`}
                     >
                       {kind.type}
@@ -948,7 +980,7 @@ function BooksQueueContent() {
                   </td>
                   <td className="px-2 py-2 min-w-0">
                     {(status === "pending" || status === "needs_review") &&
-                    postingCoa.length > 0 ? (
+                    hasPostingAccounts(postingCoaGroups) ? (
                       <select
                         className={selectClass}
                         value={accountEdits[row.id] ?? row.qb_account_id ?? ""}
@@ -958,10 +990,14 @@ function BooksQueueContent() {
                         }
                       >
                         <option value="">Select…</option>
-                        {postingCoa.map((a) => (
-                          <option key={a.qb_account_id} value={a.qb_account_id}>
-                            {a.name}
-                          </option>
+                        {postingCoaGroups.map((group) => (
+                          <optgroup key={group.label} label={group.label}>
+                            {group.items.map((a) => (
+                              <option key={a.qb_account_id} value={a.qb_account_id}>
+                                {a.name}
+                              </option>
+                            ))}
+                          </optgroup>
                         ))}
                       </select>
                     ) : (
