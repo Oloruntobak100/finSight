@@ -14,6 +14,7 @@ const FETCH_TIMEOUT_MS = 20_000;
 export const BANKING_TIMEOUT_MS = 90_000;
 export const BOOKS_CLASSIFY_TIMEOUT_MS = 120_000;
 export const BOOKS_APPROVE_TIMEOUT_MS = 90_000;
+export const BOOKS_BULK_APPROVE_TIMEOUT_MS = 180_000;
 export const DATA_FEED_TIMEOUT_MS = 120_000;
 
 export interface ApiFetchOptions extends RequestInit {

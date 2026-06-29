@@ -1,4 +1,4 @@
-import { apiFetch, BOOKS_APPROVE_TIMEOUT_MS, BOOKS_CLASSIFY_TIMEOUT_MS, type ApiFetchOptions } from "@/lib/api";
+import { apiFetch, BOOKS_APPROVE_TIMEOUT_MS, BOOKS_BULK_APPROVE_TIMEOUT_MS, BOOKS_CLASSIFY_TIMEOUT_MS, type ApiFetchOptions } from "@/lib/api";
 
 export type QbSyncStatus =
   | "pending"
@@ -208,15 +208,29 @@ export async function approveTransaction(
   });
 }
 
+export interface BulkApproveItem {
+  transaction_id: string;
+  final_account_id: string;
+}
+
 export async function approveBulk(body: {
+  items?: BulkApproveItem[];
   transaction_ids?: string[];
   payee_pattern?: string;
   final_account_id?: string;
   post?: boolean;
-}): Promise<{ approved: number; errors: { transaction_id: string; error: string }[] }> {
+}): Promise<{
+  approved: number;
+  failed: number;
+  similar_updated?: number;
+  errors: { transaction_id: string; error: string }[];
+}> {
+  const count = body.items?.length ?? body.transaction_ids?.length ?? 0;
+  const timeoutMs = count > 3 ? BOOKS_BULK_APPROVE_TIMEOUT_MS : BOOKS_APPROVE_TIMEOUT_MS;
   return apiFetch("/books/approve/bulk", {
     method: "POST",
     body: JSON.stringify(body),
+    timeoutMs,
   });
 }
 

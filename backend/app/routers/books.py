@@ -6,6 +6,7 @@ from app.models.books import (
     ApproveResponse,
     BooksSummaryResponse,
     BulkApproveRequest,
+    BulkApproveResponse,
     BulkPostRequest,
     BulkPostResponse,
     ClassifyRequest,
@@ -169,17 +170,24 @@ async def approve_txn(user_id: CurrentUser, body: ApproveRequest) -> ApproveResp
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/approve/bulk")
-async def approve_bulk(user_id: CurrentUser, body: BulkApproveRequest) -> dict:
+@router.post("/approve/bulk", response_model=BulkApproveResponse)
+async def approve_bulk(user_id: CurrentUser, body: BulkApproveRequest) -> BulkApproveResponse:
     await _ensure_qb_connected(user_id)
     try:
-        return await approve_transactions_bulk(
+        items = (
+            [{"transaction_id": i.transaction_id, "final_account_id": i.final_account_id} for i in body.items]
+            if body.items
+            else None
+        )
+        result = await approve_transactions_bulk(
             user_id,
             body.transaction_ids,
             body.payee_pattern,
+            items=items,
             post=body.post,
             final_account_id=body.final_account_id,
         )
+        return BulkApproveResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

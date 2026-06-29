@@ -18,6 +18,7 @@ from app.services.fingerprint_service import (
     fingerprint_is_trained,
     fingerprint_match_confidence,
     lookup_fingerprint,
+    lookup_fingerprint_by_payee,
     recalculate_fingerprint_confidence,
     touch_fingerprint_seen,
     upsert_fingerprint_from_decision,
@@ -1107,6 +1108,7 @@ async def approve_transaction(
     *,
     post: bool = False,
     payment_account_id: str | None = None,
+    propagate_similar: bool = True,
 ) -> dict[str, Any]:
     sb = get_supabase()
     txn_res = await run_db(
@@ -1213,12 +1215,14 @@ async def approve_transaction(
         lambda: sb.table("transactions").update(update).eq("id", transaction_id).execute()
     )
 
-    similar_updated = await propagate_payee_suggestions(
-        user_id,
-        txn,
-        fp_row,
-        exclude_transaction_id=transaction_id,
-    )
+    similar_updated = 0
+    if propagate_similar:
+        similar_updated = await propagate_payee_suggestions(
+            user_id,
+            txn,
+            fp_row,
+            exclude_transaction_id=transaction_id,
+        )
 
     result: dict[str, Any] = {
         "approved": True,
@@ -1238,11 +1242,16 @@ async def approve_transactions_bulk(
     transaction_ids: list[str] | None = None,
     payee_pattern: str | None = None,
     *,
+    items: list[dict[str, str]] | None = None,
     post: bool = False,
     final_account_id: str | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
-    if payee_pattern:
+    work: list[tuple[str, str]] = []
+
+    if items:
+        work = [(str(i["transaction_id"]), str(i["final_account_id"])) for i in items]
+    elif payee_pattern:
         res = await run_db(
             lambda: sb.table("transactions")
             .select("id, qb_account_id")
@@ -1251,24 +1260,72 @@ async def approve_transactions_bulk(
             .in_("qb_sync_status", ["pending", "needs_review"])
             .execute()
         )
-        transaction_ids = [r["id"] for r in (res.data or [])]
         if not final_account_id and res.data:
             final_account_id = res.data[0].get("qb_account_id")
+        if not final_account_id:
+            raise ValueError("final_account_id required for bulk approve")
+        work = [(r["id"], final_account_id) for r in (res.data or [])]
+    elif transaction_ids and final_account_id:
+        work = [(tid, final_account_id) for tid in transaction_ids]
 
-    if not transaction_ids:
-        return {"approved": 0, "errors": []}
-    if not final_account_id:
-        raise ValueError("final_account_id required for bulk approve")
+    if not work:
+        return {"approved": 0, "failed": 0, "similar_updated": 0, "errors": []}
+
+    account_ids = {acct for _, acct in work}
+    await _coa_validated_for_accounts(user_id, *account_ids)
 
     approved = 0
+    similar_updated = 0
     errors: list[dict[str, str]] = []
-    for tid in transaction_ids:
+    propagated_payees: set[str] = set()
+
+    for tid, acct_id in work:
         try:
-            await approve_transaction(user_id, tid, final_account_id, post=post)
+            await approve_transaction(
+                user_id,
+                tid,
+                acct_id,
+                post=post,
+                propagate_similar=False,
+            )
             approved += 1
         except ValueError as exc:
             errors.append({"transaction_id": tid, "error": str(exc)})
-    return {"approved": approved, "errors": errors}
+
+    failed_ids = {e["transaction_id"] for e in errors}
+    for tid, _ in work:
+        if tid in failed_ids:
+            continue
+        txn_res = await run_db(
+            lambda t=tid: sb.table("transactions")
+            .select("*")
+            .eq("id", t)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        txn = txn_res.data
+        if not txn:
+            continue
+        payee = txn.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern")
+        if not payee or payee in propagated_payees:
+            continue
+        fp_row = await lookup_fingerprint_by_payee(user_id, payee)
+        if fp_row:
+            similar_updated += await propagate_payee_suggestions(
+                user_id,
+                txn,
+                fp_row,
+                exclude_transaction_id=tid,
+            )
+            propagated_payees.add(payee)
+
+    return {
+        "approved": approved,
+        "failed": len(errors),
+        "similar_updated": similar_updated,
+        "errors": errors,
+    }
 
 
 async def reject_suggestion(user_id: str, transaction_id: str) -> dict[str, Any]:

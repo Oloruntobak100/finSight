@@ -10,6 +10,7 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageLoader } from "@/components/ui/page-loader";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  approveBulk,
   approveTransaction,
   classifyTransactions,
   getAutomationSettings,
@@ -18,7 +19,6 @@ import {
   getQuickBooksStatus,
   listCoa,
   postTransaction,
-  postTransactionsBulk,
   revertTransaction,
   syncCoa,
   type AutomationSettings,
@@ -43,7 +43,9 @@ const STATUS_TAB_HINTS: Partial<Record<QbSyncStatus, string>> = {
   unclassified:
     "Not categorized yet — not enough detail, or training has not started. Refresh or map manually.",
   needs_review:
-    "Best guess from the transaction — approve or correct to train the system.",
+    "Best guess from the transaction — pick QB accounts, select rows, then Save all or Post all.",
+  pending:
+    "Ready to post — select rows and Post all, or adjust accounts first.",
 };
 
 function postingTypeLabel(
@@ -103,7 +105,7 @@ function kindLabel(row: QueueItem) {
   return { type, direction, title: `${direction} · ${type}` };
 }
 
-type QueueActionId = "post" | "save" | "review" | "new" | "retry";
+type QueueActionId = "post" | "save" | "review" | "new" | "retry" | "bulk-save" | "bulk-post";
 
 interface QueueActionItem {
   id: QueueActionId;
@@ -403,7 +405,101 @@ function BooksQueueContent() {
 
   useEffect(() => {
     setOpenActionMenuId(null);
+    setSelected(new Set());
   }, [status, page]);
+
+  function resolveAccountId(row: QueueItem): string | undefined {
+    const id = accountEdits[row.id] ?? row.qb_account_id ?? "";
+    return id || undefined;
+  }
+
+  function selectedRows(): QueueItem[] {
+    return items.filter((row) => selected.has(row.id));
+  }
+
+  function bulkSelectionStats() {
+    const rows = selectedRows();
+    const ready = rows.filter((row) => resolveAccountId(row));
+    return { rows, ready, missing: rows.length - ready.length };
+  }
+
+  const allOnPageSelected =
+    items.length > 0 && (status === "pending" || status === "needs_review") && items.every((r) => selected.has(r.id));
+
+  function toggleSelectAllOnPage() {
+    if (allOnPageSelected) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(items.map((r) => r.id)));
+  }
+
+  function buildBulkItems(): { transaction_id: string; final_account_id: string }[] {
+    return selectedRows()
+      .map((row) => {
+        const final_account_id = resolveAccountId(row);
+        return final_account_id ? { transaction_id: row.id, final_account_id } : null;
+      })
+      .filter((item): item is { transaction_id: string; final_account_id: string } => item !== null);
+  }
+
+  async function handleBulkApprove(post: boolean) {
+    const { rows, ready, missing } = bulkSelectionStats();
+    if (rows.length === 0) return;
+    if (missing > 0) {
+      setError(`Select a QuickBooks account for all ${rows.length} rows (${missing} still missing)`);
+      return;
+    }
+
+    const bulkItems = buildBulkItems();
+    const kind: QueueActionId = post ? "bulk-post" : "bulk-save";
+    setActionLoading("bulk");
+    setActionKind(kind);
+    setError(null);
+    setInfo(
+      post
+        ? `Posting ${bulkItems.length} transaction${bulkItems.length === 1 ? "" : "s"} to QuickBooks…`
+        : `Saving training for ${bulkItems.length} transaction${bulkItems.length === 1 ? "" : "s"}…`
+    );
+
+    try {
+      const result = await approveBulk({ items: bulkItems, post });
+      const similar = result.similar_updated ?? 0;
+      const failed = result.failed ?? 0;
+      const approved = result.approved ?? 0;
+
+      if (failed > 0) {
+        const detail = result.errors[0]?.error;
+        setInfo(
+          post
+            ? `Posted ${approved}, failed ${failed}${similar > 0 ? ` · ${similar} similar updated` : ""}`
+            : `Saved ${approved}, failed ${failed}${similar > 0 ? ` · ${similar} similar updated` : ""}`
+        );
+        if (detail) setError(detail);
+      } else if (post) {
+        setInfo(
+          similar > 0
+            ? `Posted ${approved} to QuickBooks — ${similar} similar transaction${similar === 1 ? "" : "s"} updated`
+            : `Posted ${approved} transaction${approved === 1 ? "" : "s"} to QuickBooks`
+        );
+      } else {
+        setInfo(
+          similar > 0
+            ? `Training saved for ${approved} — ${similar} similar transaction${similar === 1 ? "" : "s"} pre-filled`
+            : `Training saved for ${approved} transaction${approved === 1 ? "" : "s"}`
+        );
+      }
+
+      setSelected(new Set());
+      await refreshData();
+    } catch (e) {
+      setInfo(null);
+      setError(e instanceof ApiError ? e.message : post ? "Bulk post failed" : "Bulk save failed");
+    } finally {
+      setActionLoading(null);
+      setActionKind(null);
+    }
+  }
 
   async function handleApprove(row: QueueItem, post = true) {
     const accountId = accountEdits[row.id] || row.qb_account_id;
@@ -461,18 +557,7 @@ function BooksQueueContent() {
   }
 
   async function handleBulkPost() {
-    if (selected.size === 0) return;
-    setActionLoading("bulk");
-    try {
-      const result = await postTransactionsBulk([...selected]);
-      setInfo(`Posted ${result.posted}, skipped ${result.skipped}, failed ${result.failed}`);
-      setSelected(new Set());
-      await refreshData();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Bulk post failed");
-    } finally {
-      setActionLoading(null);
-    }
+    await handleBulkApprove(true);
   }
 
   async function handleRevert(id: string, target: RevertTarget) {
@@ -632,11 +717,15 @@ function BooksQueueContent() {
       {actionLoading && actionKind && (
         <div className="flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-200">
           <Spinner size="sm" className="text-blue-300" />
-          {actionKind === "save"
-            ? "Saving training and updating similar payees…"
-            : actionKind === "post" || actionKind === "retry"
-              ? "Posting to QuickBooks…"
-              : "Updating queue…"}
+          {actionKind === "bulk-save"
+            ? "Saving training for selected transactions…"
+            : actionKind === "bulk-post"
+              ? "Posting selected transactions to QuickBooks…"
+              : actionKind === "save"
+                ? "Saving training and updating similar payees…"
+                : actionKind === "post" || actionKind === "retry"
+                  ? "Posting to QuickBooks…"
+                  : "Updating queue…"}
         </div>
       )}
       {info && !actionLoading && (
@@ -679,9 +768,55 @@ function BooksQueueContent() {
       )}
 
       {(status === "pending" || status === "needs_review") && selected.size > 0 && (
-        <Button onClick={handleBulkPost} disabled={actionLoading === "bulk"}>
-          Post {selected.size} selected
-        </Button>
+        <div className="sticky bottom-4 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-500/30 bg-slate-900/95 px-4 py-3 shadow-lg shadow-black/40 backdrop-blur-sm">
+          <div className="min-w-0 text-sm">
+            <span className="font-medium text-white">{selected.size} selected</span>
+            {(() => {
+              const { ready, missing } = bulkSelectionStats();
+              if (missing > 0) {
+                return (
+                  <span className="ml-2 text-amber-400">
+                    · {ready.length} ready · {missing} need QB account
+                  </span>
+                );
+              }
+              return <span className="ml-2 text-slate-400">· each uses its own QB account</span>;
+            })()}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-slate-400"
+              disabled={Boolean(actionLoading)}
+              onClick={() => setSelected(new Set())}
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={Boolean(actionLoading) || bulkSelectionStats().missing > 0}
+              loading={actionLoading === "bulk" && actionKind === "bulk-save"}
+              loadingLabel="Saving…"
+              onClick={() => void handleBulkApprove(false)}
+            >
+              Save all
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={Boolean(actionLoading) || bulkSelectionStats().missing > 0}
+              loading={actionLoading === "bulk" && actionKind === "bulk-post"}
+              loadingLabel="Posting…"
+              onClick={() => void handleBulkPost()}
+            >
+              Post all
+            </Button>
+          </div>
+        </div>
       )}
 
       <div className="relative overflow-hidden rounded-xl border border-slate-800/70">
@@ -707,7 +842,14 @@ function BooksQueueContent() {
             <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
               {(status === "pending" || status === "needs_review") && (
                 <th className="px-2 py-2">
-                  <span className="sr-only">Select</span>
+                  <input
+                    type="checkbox"
+                    checked={allOnPageSelected}
+                    disabled={items.length === 0 || Boolean(actionLoading)}
+                    onChange={toggleSelectAllOnPage}
+                    className="rounded border-slate-600"
+                    aria-label="Select all on this page"
+                  />
                 </th>
               )}
               <th className="px-2 py-2">Date</th>
@@ -736,6 +878,7 @@ function BooksQueueContent() {
               items.map((row) => {
                 const kind = kindLabel(row);
                 const rowBusy = actionLoading === row.id;
+                const rowSelected = selected.has(row.id);
                 const rowActionLabel =
                   actionKind === "save"
                     ? "Saving…"
@@ -746,7 +889,11 @@ function BooksQueueContent() {
                 <tr
                   key={row.id}
                   className={`border-b border-slate-800/50 ${
-                    rowBusy ? "bg-blue-950/25" : "hover:bg-slate-900/40"
+                    rowBusy
+                      ? "bg-blue-950/25"
+                      : rowSelected
+                        ? "bg-blue-950/15"
+                        : "hover:bg-slate-900/40"
                   }`}
                 >
                   {(status === "pending" || status === "needs_review") && (

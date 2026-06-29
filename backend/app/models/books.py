@@ -108,11 +108,24 @@ class ApproveRequest(BaseModel):
     payment_account_id: Optional[str] = None
 
 
+class BulkApproveItem(BaseModel):
+    transaction_id: str
+    final_account_id: str
+
+
 class BulkApproveRequest(BaseModel):
+    items: Optional[list[BulkApproveItem]] = None
     transaction_ids: Optional[list[str]] = None
     payee_pattern: Optional[str] = None
     final_account_id: Optional[str] = None
     post: bool = False
+
+
+class BulkApproveResponse(BaseModel):
+    approved: int
+    failed: int
+    similar_updated: int = 0
+    errors: list[dict[str, str]] = Field(default_factory=list)
 
 
 class IntentRequest(BaseModel):
