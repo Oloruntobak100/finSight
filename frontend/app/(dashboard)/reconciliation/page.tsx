@@ -139,7 +139,7 @@ export default function ReconciliationPage() {
   const missingBankMapping = Boolean(bankAccountId && selectedBank && !selectedBank.qb_account_id && !qbBankAccountId);
 
   if (optionsLoading) {
-    return <PageLoader label="Loading reconciliation…" />;
+    return <PageLoader message="Loading reconciliation…" />;
   }
 
   return (
