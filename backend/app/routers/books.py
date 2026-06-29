@@ -69,7 +69,11 @@ async def sync_coa(user_id: CurrentUser) -> CoaSyncResponse:
 async def list_coa(
     user_id: CurrentUser,
     account_type: str | None = None,
+    fresh: bool = Query(False, description="Pull latest Chart of Accounts from QuickBooks first"),
 ) -> CoaListResponse:
+    if fresh:
+        await _ensure_qb_connected(user_id)
+        await sync_chart_of_accounts(user_id)
     rows = await list_coa_rows(user_id, account_type)
     items = [
         CoaAccountResponse(
@@ -87,6 +91,8 @@ async def list_coa(
 
 @router.get("/mappings", response_model=list[MappingResponse])
 async def list_mappings(user_id: CurrentUser) -> list[MappingResponse]:
+    await _ensure_qb_connected(user_id)
+    await sync_chart_of_accounts(user_id)
     rows = await get_mappings(user_id)
     return [MappingResponse(**r) for r in rows]
 

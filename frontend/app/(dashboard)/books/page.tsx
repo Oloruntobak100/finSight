@@ -284,15 +284,12 @@ function BooksQueueContent() {
         if (!sum.readiness?.bank_connected) return;
 
         const [coa, expense, income, auto, queue] = await Promise.all([
-          listCoa(),
+          listCoa(undefined, true),
           listCoa("Expense"),
           listCoa("Income"),
           sum.automation ? Promise.resolve(null) : getAutomationSettings(),
           getBooksQueue(status, page, 20),
         ]);
-        if (cancelled) return;
-
-        if (coa.total === 0) await syncCoa();
         if (cancelled) return;
 
         setExpenseCoa(expense.items);

@@ -52,11 +52,12 @@ export default function BooksMappingsPage() {
       setQbConnected(qb.connected);
       if (!qb.connected) return;
 
-      const [coaRes, mapRes, meta] = await Promise.all([
-        listCoa(),
+      // Mappings endpoint syncs COA from QuickBooks; then read the refreshed cache.
+      const [mapRes, meta] = await Promise.all([
         listMappings(),
         apiFetch<{ accounts: BankAccount[]; categories: string[] }>("/transactions/meta"),
       ]);
+      const coaRes = await listCoa();
       setCoa(coaRes.items);
       setMappings(mapRes);
       setBankAccounts(meta.accounts.filter((a) => a.provider === "plaid" || a.provider === "mono"));

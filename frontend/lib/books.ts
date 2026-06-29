@@ -140,8 +140,14 @@ export async function syncCoa(): Promise<{ synced: number; removed?: number; rea
   return apiFetch("/books/coa/sync", { method: "POST" });
 }
 
-export async function listCoa(accountType?: string): Promise<{ items: CoaAccount[]; total: number }> {
-  const q = accountType ? `?account_type=${encodeURIComponent(accountType)}` : "";
+export async function listCoa(
+  accountType?: string,
+  fresh = false
+): Promise<{ items: CoaAccount[]; total: number }> {
+  const params = new URLSearchParams();
+  if (accountType) params.set("account_type", accountType);
+  if (fresh) params.set("fresh", "true");
+  const q = params.toString() ? `?${params.toString()}` : "";
   return apiFetch(`/books/coa${q}`);
 }
 

@@ -77,3 +77,17 @@ async def test_sync_chart_of_accounts_purges_stale_after_upsert():
     assert result["synced"] == 2
     assert result["removed"] == 2
     purge.assert_awaited_once_with("user-1", "realm-1", {"10", "11"})
+
+
+@pytest.mark.asyncio
+async def test_ensure_coa_synced_always_pulls_from_quickbooks():
+    with patch(
+        "app.services.books_service.sync_chart_of_accounts",
+        AsyncMock(return_value={"synced": 39, "removed": 0, "realm_id": "realm-1"}),
+    ) as sync:
+        from app.services.books_service import ensure_coa_synced
+
+        result = await ensure_coa_synced("user-1")
+
+    sync.assert_awaited_once_with("user-1")
+    assert result["synced"] == 39

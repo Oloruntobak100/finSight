@@ -176,11 +176,33 @@ async def update_user_automation(
 
 async def list_coa(user_id: str, account_type: str | None = None) -> list[dict[str, Any]]:
     sb = get_supabase()
-    query = sb.table("qb_chart_of_accounts").select("*").eq("user_id", user_id)
+    query = (
+        sb.table("qb_chart_of_accounts")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("active", True)
+    )
     if account_type:
         query = query.eq("account_type", account_type)
     res = await run_db(lambda: query.order("name").execute())
     return res.data or []
+
+
+def _account_ids_set(coa: list[dict[str, Any]]) -> set[str]:
+    return _coa_ids(coa)
+
+
+def _require_accounts_in_coa(
+    coa: list[dict[str, Any]],
+    *account_ids: str | None,
+    label: str = "QuickBooks account",
+) -> None:
+    valid = _account_ids_set(coa)
+    for account_id in account_ids:
+        if account_id and not _account_valid(valid, account_id):
+            raise ValueError(
+                f"{label} is no longer valid in QuickBooks. Sync Chart of Accounts and update mappings."
+            )
 
 
 async def get_mappings(user_id: str) -> list[dict[str, Any]]:
@@ -202,13 +224,32 @@ async def upsert_mapping(
     qb_account_id: str,
     qb_account_name: str | None = None,
 ) -> dict[str, Any]:
+    await ensure_coa_synced(user_id)
+    coa = await list_coa(user_id)
+    coa_row = next((r for r in coa if r.get("qb_account_id") == qb_account_id), None)
+    if not coa_row:
+        raise ValueError(
+            "QuickBooks account not found. Sync Chart of Accounts and choose a current account."
+        )
+    acct_type = coa_row.get("account_type") or ""
+    if mapping_type == "bank_account" and acct_type != "Bank":
+        raise ValueError("Bank mapping must use a QuickBooks Bank account.")
+    if mapping_type == "category" and acct_type not in (
+        "Expense",
+        "Income",
+        "Other Expense",
+        "Cost of Goods Sold",
+    ):
+        raise ValueError("Category mapping must use a QuickBooks income or expense account.")
+
+    resolved_name = qb_account_name or coa_row.get("name")
     sb = get_supabase()
     row = {
         "user_id": user_id,
         "mapping_type": mapping_type,
         "finsight_key": finsight_key,
         "qb_account_id": qb_account_id,
-        "qb_account_name": qb_account_name,
+        "qb_account_name": resolved_name,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     res = await run_db(
@@ -1103,8 +1144,9 @@ async def approve_transaction(
     if not txn:
         raise ValueError("Transaction not found")
 
+    await ensure_coa_synced(user_id)
     coa = await list_coa(user_id)
-    coa_ids = _coa_ids(coa)
+    coa_ids = _account_ids_set(coa)
     if not _account_valid(coa_ids, final_account_id):
         raise ValueError("Invalid QuickBooks account")
 
@@ -1126,6 +1168,12 @@ async def approve_transaction(
         mappings = await get_mappings(user_id)
         bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
         payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
+
+    _require_accounts_in_coa(
+        coa,
+        payment_account_id,
+        label="Payment bank account",
+    )
 
     fp_row = await upsert_fingerprint_from_decision(
         user_id,
@@ -1356,6 +1404,15 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     if not txn.get("qb_account_id") or not txn.get("qb_payment_account_id"):
         raise ValueError("Missing QB account mapping. Configure mappings first.")
 
+    await ensure_coa_synced(user_id)
+    coa = await list_coa(user_id)
+    _require_accounts_in_coa(
+        coa,
+        txn.get("qb_account_id"),
+        txn.get("qb_payment_account_id"),
+        label="QuickBooks account",
+    )
+
     posting_type = txn.get("qb_posting_type") or "expense"
     if posting_type in ("deposit", "refund"):
         payload = _build_deposit_payload(txn)
@@ -1467,9 +1524,7 @@ async def auto_post_approved_transactions() -> dict[str, int]:
 
 
 async def ensure_coa_synced(user_id: str) -> dict[str, Any]:
-    coa = await list_coa(user_id)
-    if coa:
-        return {"synced": len(coa), "cached": True}
+    """Always pull the latest Chart of Accounts from QuickBooks (with stale purge)."""
     return await sync_chart_of_accounts(user_id)
 
 
