@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -72,7 +73,6 @@ def _normalize_purchase(purchase: dict[str, Any], qb_bank_account_id: str) -> di
         "payee": (purchase.get("EntityRef") or {}).get("name") or purchase.get("PrivateNote") or "",
         "narration": purchase.get("PrivateNote") or "",
         "reference": purchase.get("DocNumber") or "",
-        "raw": purchase,
     }
 
 
@@ -93,7 +93,6 @@ def _normalize_deposit(deposit: dict[str, Any], qb_bank_account_id: str) -> dict
         "payee": deposit.get("PrivateNote") or "",
         "narration": deposit.get("PrivateNote") or "",
         "reference": deposit.get("DocNumber") or "",
-        "raw": deposit,
     }
 
 
@@ -122,7 +121,6 @@ def _normalize_transfer(transfer: dict[str, Any], qb_bank_account_id: str) -> di
         "payee": "Transfer",
         "narration": transfer.get("PrivateNote") or "Transfer",
         "reference": transfer.get("DocNumber") or "",
-        "raw": transfer,
     }
 
 
@@ -133,9 +131,11 @@ async def load_qbo_bank_activity(
     period_start: str,
     period_end: str,
 ) -> list[dict[str, Any]]:
-    purchases = await _query_entity(user_id, "Purchase", period_start, period_end)
-    deposits = await _query_entity(user_id, "Deposit", period_start, period_end)
-    transfers = await _query_entity(user_id, "Transfer", period_start, period_end)
+    purchases, deposits, transfers = await asyncio.gather(
+        _query_entity(user_id, "Purchase", period_start, period_end),
+        _query_entity(user_id, "Deposit", period_start, period_end),
+        _query_entity(user_id, "Transfer", period_start, period_end),
+    )
 
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()

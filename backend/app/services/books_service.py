@@ -84,8 +84,13 @@ SUMMARY_STATUSES = (
     "skipped",
 )
 
-# Counted internally and rolled into needs_review for the Books UI.
+# Legacy excluded rows appear in the Review tab; legacy failed rows appear in Failed.
 _LEGACY_REVIEW_STATUSES = ("excluded", "failed")
+
+_FAILED_QUEUE_OR = "qb_sync_status.eq.failed,qb_error.not.is.null"
+_NEEDS_REVIEW_QUEUE_OR = (
+    "and(qb_sync_status.eq.needs_review,qb_error.is.null),qb_sync_status.eq.excluded"
+)
 
 
 def _decision_method(method: str | None) -> str:
@@ -753,6 +758,36 @@ async def classify_user_transactions(
     return {"classified": total_classified, "remaining_unclassified": remaining}
 
 
+def _apply_books_queue_status_filter(query: Any, status: str | None) -> Any:
+    if status == "unclassified":
+        return query.is_("qb_sync_status", "null")
+    if status == "failed":
+        return query.or_(_FAILED_QUEUE_OR)
+    if status == "needs_review":
+        return query.or_(_NEEDS_REVIEW_QUEUE_OR)
+    if status:
+        return query.eq("qb_sync_status", status)
+    return query.not_.is_("qb_sync_status", "null")
+
+
+async def _count_books_queue_status(
+    user_id: str,
+    active_bank_ids: set[str],
+    status: str,
+) -> int:
+    sb = get_supabase()
+    query = (
+        sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+    )
+    query = _apply_books_account_filter(query, active_bank_ids)
+    query = _apply_books_queue_status_filter(query, status)
+    res = await run_db(lambda: query.execute())
+    return res.count or 0
+
+
 async def get_queue(
     user_id: str,
     status: str | None = None,
@@ -771,18 +806,7 @@ async def get_queue(
         .in_("source_provider", list(BANK_PROVIDERS))
     )
     query = _apply_books_account_filter(query, active_bank_ids)
-
-    if status == "unclassified":
-        query = query.is_("qb_sync_status", "null")
-    else:
-        query = query.not_.is_("qb_sync_status", "null")
-        if status == "needs_review":
-            query = query.in_(
-                "qb_sync_status",
-                ["needs_review", *_LEGACY_REVIEW_STATUSES],
-            )
-        elif status:
-            query = query.eq("qb_sync_status", status)
+    query = _apply_books_queue_status_filter(query, status)
 
     offset = (page - 1) * limit
     res = await run_db(
@@ -885,26 +909,26 @@ async def get_summary(user_id: str) -> dict[str, Any]:
             count_scoped_transactions(user_id, active_bank_ids, unclassified=True),
             *[
                 count_scoped_transactions(user_id, active_bank_ids, qb_sync_status=st)
-                for st in (*SUMMARY_STATUSES, *_LEGACY_REVIEW_STATUSES)
+                for st in SUMMARY_STATUSES
             ],
+            _count_books_queue_status(user_id, active_bank_ids, "needs_review"),
+            _count_books_queue_status(user_id, active_bank_ids, "failed"),
         ]
         results = await asyncio.gather(*count_tasks)
         unclassified = results[0]
         counts["unclassified"] = unclassified
         coverage["unclassified"] = unclassified
 
-        all_statuses = (*SUMMARY_STATUSES, *_LEGACY_REVIEW_STATUSES)
-        for st, n in zip(all_statuses, results[1:], strict=True):
+        for st, n in zip(SUMMARY_STATUSES, results[1 : 1 + len(SUMMARY_STATUSES)], strict=True):
             if n:
                 counts[st] = n
 
-        review = (
-            counts.pop("needs_review", 0)
-            + counts.pop("excluded", 0)
-            + counts.pop("failed", 0)
-        )
-        if review:
-            counts["needs_review"] = review
+        needs_review = results[1 + len(SUMMARY_STATUSES)]
+        failed = results[2 + len(SUMMARY_STATUSES)]
+        if needs_review:
+            counts["needs_review"] = needs_review
+        if failed:
+            counts["failed"] = failed
 
         coverage["total_bank_transactions"] = sum(counts.values())
         coverage["classified"] = coverage["total_bank_transactions"] - unclassified
@@ -978,7 +1002,9 @@ async def revert_transaction(
     if not current:
         raise ValueError("Transaction is not in the books queue")
 
-    allowed = _REVERT_TARGETS.get(current, set())
+    allowed = set(_REVERT_TARGETS.get(current, set()))
+    if current == "needs_review" and txn.get("qb_error") and target == "needs_review":
+        allowed.add("needs_review")
     if target not in allowed:
         raise ValueError(f"Cannot move from {current} to {target}")
 

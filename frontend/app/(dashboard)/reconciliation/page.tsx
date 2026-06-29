@@ -98,7 +98,7 @@ export default function ReconciliationSetupPage() {
     try {
       setStage("Fetching QuickBooks data…");
       await new Promise((r) => setTimeout(r, 300));
-      setStage("Running matching engine…");
+      setStage("Running matching engine (large periods may take 1–3 minutes)…");
       const run = await createReconciliationRun({
         mono_account_id: monoAccountId,
         qb_bank_account_id: qbBankAccountId,

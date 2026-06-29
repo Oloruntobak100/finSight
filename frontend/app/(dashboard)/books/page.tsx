@@ -41,9 +41,14 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "unclassified", label: "New" },
   { id: "pending", label: "Pending" },
   { id: "needs_review", label: "Review" },
+  { id: "failed", label: "Failed" },
   { id: "auto_approved", label: "Auto" },
   { id: "posted", label: "Posted" },
 ];
+
+function queueTabEditable(status: QbSyncStatus): boolean {
+  return status === "pending" || status === "needs_review" || status === "failed";
+}
 
 function kindLabel(row: QueueItem) {
   const postingType = row.qb_posting_type;
@@ -185,7 +190,7 @@ function QuickBooksMappingCell({
   onPartyChange: (value: string) => void;
   onCreateParty: () => void;
 }) {
-  const editable = status === "pending" || status === "needs_review";
+  const editable = queueTabEditable(status);
   const disabled = rowBusy || Boolean(actionLoading);
 
   if (!editable || !hasPostingAccounts(postingCoaGroups)) {
@@ -299,7 +304,7 @@ interface QueueActionItem {
 function buildQueueActions(status: QbSyncStatus, row: QueueItem): QueueActionItem[] {
   const actions: QueueActionItem[] = [];
 
-  if (status === "pending" || status === "needs_review") {
+  if (queueTabEditable(status)) {
     actions.push(
       { id: "post", label: "Post", hint: "Approve and post to QuickBooks" },
       { id: "save", label: "Save", hint: "Approve and train without posting" }
@@ -316,6 +321,12 @@ function buildQueueActions(status: QbSyncStatus, row: QueueItem): QueueActionIte
       actions.unshift({ id: "retry", label: "Retry post", hint: "Try posting again" });
     }
     actions.push({ id: "new", label: "Move to New" });
+  } else if (status === "failed") {
+    actions.unshift({ id: "retry", label: "Retry post", hint: "Try posting again with current mapping" });
+    actions.push(
+      { id: "review", label: "Move to Review" },
+      { id: "new", label: "Move to New" }
+    );
   } else if (status === "auto_approved") {
     actions.push(
       { id: "review", label: "Move to Review" },
@@ -403,9 +414,7 @@ function BooksQueueContent() {
   const searchParams = useSearchParams();
   const rawStatus = searchParams.get("status") as QbSyncStatus | null;
   const status: QbSyncStatus =
-    rawStatus === "excluded" || rawStatus === "failed"
-      ? "needs_review"
-      : rawStatus || "unclassified";
+    rawStatus === "excluded" ? "needs_review" : rawStatus || "unclassified";
   const page = Number(searchParams.get("page") || "1");
 
   const [qbConnected, setQbConnected] = useState<boolean | null>(null);
@@ -442,7 +451,10 @@ function BooksQueueContent() {
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
-    6 + (showBankColumn ? 1 : 0) + (status === "pending" || status === "needs_review" ? 1 : 0);
+    6 +
+    (showBankColumn ? 1 : 0) +
+    (queueTabEditable(status) ? 1 : 0) +
+    (status === "failed" ? 1 : 0);
 
   const refreshQueue = useCallback(
     async (statusFilter: QbSyncStatus, pageNum: number) => {
@@ -491,7 +503,7 @@ function BooksQueueContent() {
 
   const syncBooksFromQuickBooks = useCallback(
     async (opts?: { parties?: boolean }) => {
-      const syncParties = opts?.parties ?? (status === "pending" || status === "needs_review");
+      const syncParties = opts?.parties ?? queueTabEditable(status);
       const coa = await listCoa(undefined, true);
       setPostingCoaGroups(buildPostingCoaGroups(coa.items));
       setFlatCoa(coa.items);
@@ -637,7 +649,7 @@ function BooksQueueContent() {
 
   useEffect(() => {
     if (!bootstrapped || !qbConnected) return;
-    if (status !== "pending" && status !== "needs_review") return;
+    if (!queueTabEditable(status)) return;
 
     let cancelled = false;
     async function loadQuickBooksData() {
@@ -663,7 +675,7 @@ function BooksQueueContent() {
       if (document.visibilityState !== "visible") return;
       if (Date.now() - lastQbSyncRef.current < QB_SYNC_STALE_MS) return;
       void syncBooksFromQuickBooks({
-        parties: status === "pending" || status === "needs_review",
+        parties: queueTabEditable(status),
       }).catch(() => undefined);
     };
 
@@ -678,7 +690,7 @@ function BooksQueueContent() {
   }, [status, page]);
 
   useEffect(() => {
-    if ((status !== "pending" && status !== "needs_review") || flatCoa.length === 0) return;
+    if (!queueTabEditable(status) || flatCoa.length === 0) return;
     for (const row of items) {
       const accountId = accountEdits[row.id] ?? row.qb_account_id ?? "";
       if (!accountId || partyEdits[row.id] || row.qb_party_id) continue;
@@ -760,7 +772,7 @@ function BooksQueueContent() {
   }
 
   const allOnPageSelected =
-    items.length > 0 && (status === "pending" || status === "needs_review") && items.every((r) => selected.has(r.id));
+    items.length > 0 && queueTabEditable(status) && items.every((r) => selected.has(r.id));
 
   function toggleSelectAllOnPage() {
     if (allOnPageSelected) {
@@ -813,7 +825,7 @@ function BooksQueueContent() {
 
       if (failed > 0) {
         const detail = result.errors[0]?.error;
-        setInfo(post ? `Posted ${approved}, failed ${failed}` : `Saved ${approved}, failed ${failed}`);
+        setInfo(post ? `Posted ${approved}, failed ${failed} — see Failed tab` : `Saved ${approved}, failed ${failed} — see Failed tab`);
         if (detail) setError(detail);
       } else {
         setInfo(
@@ -1109,7 +1121,7 @@ function BooksQueueContent() {
         </div>
       )}
 
-      {(status === "pending" || status === "needs_review") && selected.size > 0 && (
+      {queueTabEditable(status) && selected.size > 0 && (
         <div className="sticky bottom-4 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-500/30 bg-slate-900/95 px-4 py-3 shadow-lg shadow-black/40 backdrop-blur-sm">
           <div className="min-w-0 text-sm">
             <span className="font-medium text-white">{selected.size} selected</span>
@@ -1171,18 +1183,19 @@ function BooksQueueContent() {
           className={`min-w-[960px] w-full text-sm transition-opacity ${queueLoading ? "pointer-events-none opacity-40" : ""}`}
         >
           <colgroup>
-            {(status === "pending" || status === "needs_review") && <col className="w-10" />}
+            {queueTabEditable(status) && <col className="w-10" />}
             <col className="w-[4.25rem]" />
             {showBankColumn && <col className="w-[5.5rem]" />}
             <col className="w-[18%]" />
             <col className="w-[4.75rem]" />
             <col className="w-[26%]" />
+            {status === "failed" && <col className="min-w-[12rem]" />}
             <col className="w-[7.5rem]" />
             <col className="w-10" />
           </colgroup>
           <thead>
             <tr className="border-b border-slate-800 text-left text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              {(status === "pending" || status === "needs_review") && (
+              {queueTabEditable(status) && (
                 <th className={`${cellPad} pb-2`}>
                   <input
                     type="checkbox"
@@ -1201,9 +1214,10 @@ function BooksQueueContent() {
               <th className={`${cellPad} pb-2`}>
                 <span className="block">QuickBooks</span>
                 <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-slate-600">
-                  Account · {status === "pending" || status === "needs_review" ? "Vendor / customer" : "Mapping"}
+                  Account · {queueTabEditable(status) ? "Vendor / customer" : "Mapping"}
                 </span>
               </th>
+              {status === "failed" && <th className={`${cellPad} pb-2`}>Error</th>}
               <th className={`${cellPad} pb-2 text-right`}>Amount</th>
               <th className={`${cellPad} pb-2`}>
                 <span className="sr-only">Actions</span>
@@ -1248,7 +1262,7 @@ function BooksQueueContent() {
                         : "hover:bg-slate-900/40"
                   }`}
                 >
-                  {(status === "pending" || status === "needs_review") && (
+                  {queueTabEditable(status) && (
                     <td className={cellPad}>
                       <input
                         type="checkbox"
@@ -1320,6 +1334,13 @@ function BooksQueueContent() {
                       onCreateParty={() => void handleCreateParty(row)}
                     />
                   </td>
+                  {status === "failed" && (
+                    <td className={`${cellPad} max-w-xs text-xs text-red-300`}>
+                      <p className="line-clamp-3" title={row.qb_error || row.qb_confidence_reason || undefined}>
+                        {row.qb_error || row.qb_confidence_reason || "Post failed"}
+                      </p>
+                    </td>
+                  )}
                   <td
                     className={`${cellPad} text-right text-xs font-medium tabular-nums whitespace-nowrap ${
                       row.transaction_type === "credit" ? "text-green-400" : "text-white"

@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api";
+import { apiFetch, RECONCILIATION_MATCH_TIMEOUT_MS } from "@/lib/api";
 
 export type RunStatus = "DRAFT" | "IN_REVIEW" | "ADJUSTED" | "APPROVED" | "LOCKED";
 
@@ -123,7 +123,11 @@ export async function createReconciliationRun(body: {
   period_start: string;
   period_end: string;
 }): Promise<ReconciliationRun> {
-  return apiFetch("/reconciliation/runs", { method: "POST", body: JSON.stringify(body) });
+  return apiFetch("/reconciliation/runs", {
+    method: "POST",
+    body: JSON.stringify(body),
+    timeoutMs: RECONCILIATION_MATCH_TIMEOUT_MS,
+  });
 }
 
 export async function getReconciliationRun(runId: string): Promise<ReconciliationRun> {
@@ -154,7 +158,10 @@ export async function getBalanceProof(runId: string): Promise<{ balance_proof: B
 }
 
 export async function recalculateReconciliationRun(runId: string): Promise<ReconciliationRun> {
-  return apiFetch(`/reconciliation/runs/${runId}/recalculate`, { method: "POST" });
+  return apiFetch(`/reconciliation/runs/${runId}/recalculate`, {
+    method: "POST",
+    timeoutMs: RECONCILIATION_MATCH_TIMEOUT_MS,
+  });
 }
 
 export async function listReconciliationAdjustments(

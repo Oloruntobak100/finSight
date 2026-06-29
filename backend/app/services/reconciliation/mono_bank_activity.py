@@ -28,7 +28,10 @@ async def load_mono_bank_activity(
     sb = get_supabase()
     res = await run_db(
         lambda: sb.table("transactions")
-        .select("*")
+        .select(
+            "id, transaction_date, amount, currency, transaction_type, "
+            "merchant_name, description, qb_entity_id, qb_entity_type, qb_sync_status"
+        )
         .eq("user_id", user_id)
         .eq("account_id", mono_account_id)
         .in_("source_provider", list(BANK_PROVIDERS))
@@ -55,7 +58,6 @@ async def load_mono_bank_activity(
                 "qb_entity_id": row.get("qb_entity_id"),
                 "qb_entity_type": row.get("qb_entity_type"),
                 "qb_sync_status": row.get("qb_sync_status"),
-                "raw": row,
             }
         )
     return normalized

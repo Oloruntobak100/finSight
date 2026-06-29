@@ -114,6 +114,9 @@ async def test_get_summary_aggregates_exact_counts():
         "app.services.books_service.count_scoped_transactions",
         side_effect=fake_count,
     ), patch(
+        "app.services.books_service._count_books_queue_status",
+        side_effect=lambda _uid, _ids, status: 303 if status == "needs_review" else 0,
+    ), patch(
         "app.services.books_service.get_user_automation",
         AsyncMock(return_value={"auto_approve_enabled": False, "auto_approve_threshold": 0.9, "digest_enabled": True}),
     ), patch(

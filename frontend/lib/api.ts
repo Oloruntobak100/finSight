@@ -16,6 +16,8 @@ export const BOOKS_CLASSIFY_TIMEOUT_MS = 120_000;
 export const BOOKS_APPROVE_TIMEOUT_MS = 90_000;
 export const BOOKS_BULK_APPROVE_TIMEOUT_MS = 180_000;
 export const DATA_FEED_TIMEOUT_MS = 120_000;
+/** Full-period transaction matching can load 1000+ lines + QBO queries. */
+export const RECONCILIATION_MATCH_TIMEOUT_MS = 300_000;
 
 export interface ApiFetchOptions extends RequestInit {
   timeoutMs?: number;

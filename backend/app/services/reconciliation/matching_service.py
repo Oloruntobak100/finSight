@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +16,49 @@ from app.services.reconciliation.constants import AUTO_MATCH_THRESHOLD
 from app.services.reconciliation.mono_bank_activity import load_mono_bank_activity, mono_closing_balance
 from app.services.reconciliation.qbo_bank_activity import load_qbo_bank_activity, qbo_bank_account_balance
 from app.services.reconciliation.scoring import classify_score, compute_match_score, is_nip_timing_difference
+
+ITEM_INSERT_CHUNK = 500
+OUTSTANDING_INSERT_CHUNK = 500
+
+
+def _amount_bucket(amount: float) -> int:
+    """Coarse bucket for fuzzy candidate lookup (NGN-friendly)."""
+    return int(round(float(amount) * 100))
+
+
+def _fuzzy_candidates(
+    mono: dict[str, Any],
+    qbo_by_bucket: dict[tuple[str, int], list[dict[str, Any]]],
+    used_qbo: set[str],
+) -> list[dict[str, Any]]:
+    direction = mono.get("direction")
+    base = _amount_bucket(mono["amount"])
+    candidates: list[dict[str, Any]] = []
+    for delta in range(-5, 6):
+        for qbo in qbo_by_bucket.get((direction, base + delta), []):
+            qid = qbo.get("qbo_entity_id") or ""
+            if qid not in used_qbo:
+                candidates.append(qbo)
+    if candidates:
+        return candidates
+    # Fallback when amounts differ by more than a few kobo
+    return [q for q in qbo_by_bucket.get((direction, base), []) if (q.get("qbo_entity_id") or "") not in used_qbo]
+
+
+def _build_mono_timing_index(mono_lines: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    index: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for mono in mono_lines:
+        index[_amount_bucket(mono["amount"])].append(mono)
+    return index
+
+
+async def _bulk_insert(table: str, rows: list[dict[str, Any]], *, chunk: int = ITEM_INSERT_CHUNK) -> None:
+    if not rows:
+        return
+    sb = get_supabase()
+    for start in range(0, len(rows), chunk):
+        batch = rows[start : start + chunk]
+        await run_db(lambda b=batch: sb.table(table).insert(b).execute())
 
 
 def _default_mono_classification(direction: str) -> str:
@@ -110,13 +155,16 @@ async def _import_prior_outstanding(
     if not outstanding:
         return
     sb = get_supabase()
-    for item in outstanding:
-        await run_db(
-            lambda i=item: sb.table("reconciliation_outstanding_items")
-            .update({"updated_at": datetime.now(timezone.utc).isoformat()})
-            .eq("id", i["id"])
-            .execute()
-        )
+    ids = [item["id"] for item in outstanding if item.get("id")]
+    if not ids:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    await run_db(
+        lambda: sb.table("reconciliation_outstanding_items")
+        .update({"updated_at": now})
+        .in_("id", ids)
+        .execute()
+    )
 
 
 async def run_matching_engine(
@@ -131,23 +179,22 @@ async def run_matching_engine(
     timing_patterns = await _load_timing_patterns(user_id)
     open_outstanding = await _load_open_outstanding(user_id, mono_account_id, resolved_qb)
 
-    mono_lines = await load_mono_bank_activity(
-        user_id,
-        mono_account_id=mono_account_id,
-        period_start=period_start,
-        period_end=period_end,
+    mono_lines, qbo_lines, (mono_balance, currency, balance_source), qbo_balance = await asyncio.gather(
+        load_mono_bank_activity(
+            user_id,
+            mono_account_id=mono_account_id,
+            period_start=period_start,
+            period_end=period_end,
+        ),
+        load_qbo_bank_activity(
+            user_id,
+            qb_bank_account_id=resolved_qb,
+            period_start=period_start,
+            period_end=period_end,
+        ),
+        mono_closing_balance(user_id, mono_account_id, period_end),
+        qbo_bank_account_balance(user_id, resolved_qb),
     )
-    qbo_lines = await load_qbo_bank_activity(
-        user_id,
-        qb_bank_account_id=resolved_qb,
-        period_start=period_start,
-        period_end=period_end,
-    )
-
-    mono_balance, currency, balance_source = await mono_closing_balance(
-        user_id, mono_account_id, period_end
-    )
-    qbo_balance = await qbo_bank_account_balance(user_id, resolved_qb)
 
     sb = get_supabase()
     run_row = {
@@ -199,6 +246,7 @@ async def run_matching_engine(
         )
 
     # Pass 3 — prior outstanding (before fuzzy)
+    outstanding_clears: list[tuple[dict[str, Any], dict[str, Any], float]] = []
     for mono in mono_lines:
         mid = mono.get("mono_transaction_id") or ""
         if mid in used_mono:
@@ -228,33 +276,43 @@ async def run_matching_engine(
                         prior_run_id=outstanding.get("originating_run_id"),
                     )
                 )
-                await run_db(
-                    lambda oid=outstanding["id"]: sb.table("reconciliation_outstanding_items")
-                    .update(
-                        {
-                            "status": "CLEARED",
-                            "resolved_run_id": run_id,
-                            "cleared_date": mono.get("transaction_date"),
-                            "mono_transaction_id": mid,
-                        }
-                    )
-                    .eq("id", oid)
-                    .execute()
-                )
+                outstanding_clears.append((outstanding, mono, score))
                 break
+
+    if outstanding_clears:
+        sb = get_supabase()
+
+        async def _clear_outstanding(outstanding: dict[str, Any], mono: dict[str, Any]) -> None:
+            await run_db(
+                lambda oid=outstanding["id"], m=mono, rid=run_id: sb.table(
+                    "reconciliation_outstanding_items"
+                )
+                .update(
+                    {
+                        "status": "CLEARED",
+                        "resolved_run_id": rid,
+                        "cleared_date": m.get("transaction_date"),
+                        "mono_transaction_id": m.get("mono_transaction_id"),
+                    }
+                )
+                .eq("id", oid)
+                .execute()
+            )
+
+        await asyncio.gather(*(_clear_outstanding(o, m) for o, m, _ in outstanding_clears))
 
     # Pass 2 — fuzzy match
     remaining_mono = [m for m in mono_lines if (m.get("mono_transaction_id") or "") not in used_mono]
     remaining_qbo = [q for q in qbo_lines if q.get("qbo_entity_id") not in used_qbo]
 
+    qbo_by_bucket: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for qbo in remaining_qbo:
+        qbo_by_bucket[(qbo.get("direction"), _amount_bucket(qbo["amount"]))].append(qbo)
+
     for mono in remaining_mono:
         best_score = 0.0
         best_qbo: dict[str, Any] | None = None
-        for qbo in remaining_qbo:
-            if qbo.get("qbo_entity_id") in used_qbo:
-                continue
-            if mono.get("direction") != qbo.get("direction"):
-                continue
+        for qbo in _fuzzy_candidates(mono, qbo_by_bucket, used_qbo):
             score = compute_match_score(
                 amount_a=mono["amount"],
                 amount_b=qbo["amount"],
@@ -299,6 +357,9 @@ async def run_matching_engine(
             )
 
     # Pass 4 — classify remainder
+    outstanding_to_insert: list[dict[str, Any]] = []
+    mono_timing_index = _build_mono_timing_index(mono_lines)
+
     for mono in mono_lines:
         mid = mono.get("mono_transaction_id") or ""
         if mid in used_mono:
@@ -320,24 +381,20 @@ async def run_matching_engine(
             outstanding_type = (
                 "DEPOSIT_IN_TRANSIT" if status == "DEPOSITS_IN_TRANSIT" else "OUTSTANDING_PAYMENT"
             )
-            await run_db(
-                lambda m=mono, ot=outstanding_type: sb.table("reconciliation_outstanding_items")
-                .insert(
-                    {
-                        "user_id": user_id,
-                        "mono_account_id": mono_account_id,
-                        "qb_bank_account_id": resolved_qb,
-                        "originating_run_id": run_id,
-                        "item_type": ot,
-                        "amount": m["amount"],
-                        "currency": m.get("currency") or "NGN",
-                        "description": m.get("payee") or m.get("narration"),
-                        "original_date": m.get("transaction_date"),
-                        "status": "OPEN",
-                        "mono_transaction_id": m.get("mono_transaction_id"),
-                    }
-                )
-                .execute()
+            outstanding_to_insert.append(
+                {
+                    "user_id": user_id,
+                    "mono_account_id": mono_account_id,
+                    "qb_bank_account_id": resolved_qb,
+                    "originating_run_id": run_id,
+                    "item_type": outstanding_type,
+                    "amount": mono["amount"],
+                    "currency": mono.get("currency") or "NGN",
+                    "description": mono.get("payee") or mono.get("narration"),
+                    "original_date": mono.get("transaction_date"),
+                    "status": "OPEN",
+                    "mono_transaction_id": mono.get("mono_transaction_id"),
+                }
             )
 
     for qbo in qbo_lines:
@@ -345,11 +402,15 @@ async def run_matching_engine(
         if qid in used_qbo:
             continue
         status = _default_qbo_classification(qbo.get("direction") or "in")
-        for mono in mono_lines:
-            if is_nip_timing_difference(qbo.get("transaction_date"), mono.get("transaction_date")):
-                if abs(mono["amount"] - qbo["amount"]) / max(mono["amount"], qbo["amount"], 1) <= 0.01:
-                    status = "TIMING_DIFFERENCE"
-                    break
+        base = _amount_bucket(qbo["amount"])
+        for delta in range(-5, 6):
+            for mono in mono_timing_index.get(base + delta, []):
+                if is_nip_timing_difference(qbo.get("transaction_date"), mono.get("transaction_date")):
+                    if abs(mono["amount"] - qbo["amount"]) / max(mono["amount"], qbo["amount"], 1) <= 0.01:
+                        status = "TIMING_DIFFERENCE"
+                        break
+            if status == "TIMING_DIFFERENCE":
+                break
         items_to_insert.append(
             _item_row(
                 run_id=run_id,
@@ -360,8 +421,10 @@ async def run_matching_engine(
             )
         )
 
-    if items_to_insert:
-        await run_db(lambda: sb.table("reconciliation_items").insert(items_to_insert).execute())
+    await asyncio.gather(
+        _bulk_insert("reconciliation_items", items_to_insert),
+        _bulk_insert("reconciliation_outstanding_items", outstanding_to_insert, chunk=OUTSTANDING_INSERT_CHUNK),
+    )
 
     counts: dict[str, int] = {}
     for item in items_to_insert:
