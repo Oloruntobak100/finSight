@@ -15,6 +15,8 @@ from app.services.fingerprint_service import (
     _decisions_for_fingerprint,
     extract_fingerprint,
     fingerprint_confidence_reason,
+    fingerprint_is_trained,
+    fingerprint_match_confidence,
     lookup_fingerprint,
     recalculate_fingerprint_confidence,
     touch_fingerprint_seen,
@@ -426,7 +428,7 @@ def classify_transaction(
                 confidence = min(confidence, 0.55)
 
     if not qb_account_id and fingerprint_row:
-        fp_conf = float(fingerprint_row.get("confidence") or 0)
+        fp_conf = fingerprint_match_confidence(txn, fingerprint_row)
         fp_acct = fingerprint_row.get("qb_account_id")
         if fp_conf >= CONFIDENCE_FINGERPRINT_MIN and _account_valid(coa_ids, str(fp_acct or "")):
             qb_account_id = str(fp_acct)
@@ -577,7 +579,7 @@ async def _classify_transactions_batch(
         learned_kind: PostingKind | None = None
         if fingerprint_row:
             await touch_fingerprint_seen(user_id, txn)
-            fp_conf = float(fingerprint_row.get("confidence") or 0)
+            fp_conf = fingerprint_match_confidence(txn, fingerprint_row)
             stored_kind = fingerprint_row.get("posting_kind")
             if fp_conf >= CONFIDENCE_FINGERPRINT_MIN and stored_kind:
                 if not (allow_reclassify and stored_kind == "transfer"):
@@ -592,7 +594,7 @@ async def _classify_transactions_batch(
 
         fp_hit = (
             fingerprint_row
-            and float(fingerprint_row.get("confidence") or 0) >= CONFIDENCE_FINGERPRINT_MIN
+            and fingerprint_match_confidence(txn, fingerprint_row) >= CONFIDENCE_FINGERPRINT_MIN
         )
         if rag_enabled and not has_rule and not fp_hit:
             rag_result = await rag_classify_hint(user_id, txn, coa_ids)
@@ -1011,6 +1013,82 @@ async def set_posting_intent(
     return refreshed.data
 
 
+async def propagate_payee_suggestions(
+    user_id: str,
+    txn: dict[str, Any],
+    fp_row: dict[str, Any],
+    *,
+    exclude_transaction_id: str,
+) -> int:
+    """Apply a trained payee fingerprint to similar rows still in New/Review."""
+    if not fingerprint_is_trained(fp_row):
+        return 0
+
+    payee = fp_row.get("payee_pattern") or extract_fingerprint(txn).get("payee_pattern")
+    merchant = (txn.get("merchant_name") or "").strip()
+    if not payee:
+        return 0
+
+    sb = get_supabase()
+    mappings = await get_mappings(user_id)
+    user_rules = await load_user_category_rules(user_id, sb)
+    coa = await list_coa(user_id)
+    coa_ids = _coa_ids(coa)
+    automation = await get_user_automation(user_id)
+
+    res = await run_db(
+        lambda: sb.table("transactions")
+        .select("*")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+        .eq("payee_pattern", payee)
+        .in_("qb_sync_status", ["needs_review", "unclassified"])
+        .neq("id", exclude_transaction_id)
+        .limit(500)
+        .execute()
+    )
+    candidates: dict[str, dict[str, Any]] = {r["id"]: r for r in (res.data or [])}
+
+    if merchant:
+        extra = await run_db(
+            lambda: sb.table("transactions")
+            .select("*")
+            .eq("user_id", user_id)
+            .in_("source_provider", list(BANK_PROVIDERS))
+            .eq("merchant_name", merchant)
+            .in_("qb_sync_status", ["needs_review", "unclassified"])
+            .neq("id", exclude_transaction_id)
+            .limit(200)
+            .execute()
+        )
+        for row in extra.data or []:
+            candidates[row["id"]] = row
+
+    updated = 0
+    for row in candidates.values():
+        kind = detect_posting_kind(row)
+        if kind in ("transfer", "reversal", "balance_sheet"):
+            continue
+        patch = classify_transaction(
+            row,
+            mappings,
+            user_rules,
+            coa,
+            coa_ids,
+            fingerprint_row=fp_row,
+            automation=automation,
+        )
+        await run_db(
+            lambda t=row["id"], u=patch: sb.table("transactions")
+            .update(u)
+            .eq("id", t)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        updated += 1
+    return updated
+
+
 async def approve_transaction(
     user_id: str,
     transaction_id: str,
@@ -1120,7 +1198,19 @@ async def approve_transaction(
         lambda: sb.table("transactions").update(update).eq("id", transaction_id).execute()
     )
 
-    result: dict[str, Any] = {"approved": True, "transaction_id": transaction_id, "decision": decision}
+    similar_updated = await propagate_payee_suggestions(
+        user_id,
+        txn,
+        fp_row,
+        exclude_transaction_id=transaction_id,
+    )
+
+    result: dict[str, Any] = {
+        "approved": True,
+        "transaction_id": transaction_id,
+        "decision": decision,
+        "similar_updated": similar_updated,
+    }
     if post:
         result["post"] = await post_transaction(user_id, transaction_id)
     else:

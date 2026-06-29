@@ -92,7 +92,7 @@ def fingerprint_fields_for_row(txn: dict[str, Any]) -> dict[str, Any]:
     return {"payee_pattern": fp["payee_pattern"]}
 
 
-async def lookup_fingerprint(user_id: str, fp: dict[str, str]) -> dict[str, Any] | None:
+async def _lookup_exact_fingerprint(user_id: str, fp: dict[str, str]) -> dict[str, Any] | None:
     sb = get_supabase()
     channel = fp.get("channel") or "OTHER"
     res = await run_db(
@@ -107,6 +107,59 @@ async def lookup_fingerprint(user_id: str, fp: dict[str, str]) -> dict[str, Any]
     )
     rows = res.data or []
     return rows[0] if rows else None
+
+
+def fingerprint_is_trained(row: dict[str, Any]) -> bool:
+    return float(row.get("confidence") or 0) >= FINGERPRINT_MATCH_MIN or int(
+        row.get("recurrence_count") or 0
+    ) >= 1
+
+
+async def lookup_fingerprint_by_payee(
+    user_id: str, payee_pattern: str
+) -> dict[str, Any] | None:
+    """Best trained fingerprint for a payee across channels and amount bands."""
+    if not payee_pattern or payee_pattern == "unknown":
+        return None
+    sb = get_supabase()
+    res = await run_db(
+        lambda: sb.table("transaction_fingerprints")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("payee_pattern", payee_pattern)
+        .order("confidence", desc=True)
+        .order("recurrence_count", desc=True)
+        .limit(5)
+        .execute()
+    )
+    for row in res.data or []:
+        if fingerprint_is_trained(row):
+            return row
+    return None
+
+
+async def lookup_fingerprint(user_id: str, fp: dict[str, str]) -> dict[str, Any] | None:
+    exact = await _lookup_exact_fingerprint(user_id, fp)
+    if exact and fingerprint_is_trained(exact):
+        return exact
+    payee = await lookup_fingerprint_by_payee(user_id, fp["payee_pattern"])
+    if payee:
+        return payee
+    return None
+
+
+def fingerprint_match_confidence(txn: dict[str, Any], fp_row: dict[str, Any]) -> float:
+    """Exact dimensional matches keep full confidence; payee-only matches stay in Review."""
+    fp_txn = extract_fingerprint(txn)
+    exact = (
+        fp_row.get("payee_pattern") == fp_txn["payee_pattern"]
+        and (fp_row.get("channel") or "OTHER") == (fp_txn.get("channel") or "OTHER")
+        and fp_row.get("amount_band") == fp_txn["amount_band"]
+    )
+    raw = float(fp_row.get("confidence") or 0)
+    if exact:
+        return raw
+    return min(raw, 0.84)
 
 
 def _confidence_from_decisions(decisions: list[dict[str, Any]]) -> float:
@@ -173,7 +226,9 @@ async def upsert_fingerprint_from_decision(
     now = datetime.now(timezone.utc).isoformat()
     channel = fp.get("channel") or "OTHER"
 
-    existing = await lookup_fingerprint(user_id, fp)
+    existing = await _lookup_exact_fingerprint(user_id, fp)
+    if not existing:
+        existing = await lookup_fingerprint_by_payee(user_id, fp["payee_pattern"])
     if existing:
         fingerprint_id = existing["id"]
         recurrence = int(existing.get("recurrence_count") or 0) + 1

@@ -185,3 +185,4 @@ class ApproveResponse(BaseModel):
     decision: Optional[dict[str, Any]] = None
     post: Optional[dict[str, Any]] = None
     transaction: Optional[dict[str, Any]] = None
+    similar_updated: int = 0

@@ -196,7 +196,7 @@ export async function approveTransaction(
   transactionId: string,
   finalAccountId: string,
   post = true
-): Promise<unknown> {
+): Promise<{ approved: boolean; similar_updated?: number }> {
   return apiFetch("/books/approve", {
     method: "POST",
     body: JSON.stringify({

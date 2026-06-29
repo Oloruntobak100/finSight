@@ -28,3 +28,27 @@ def test_extract_fingerprint_mono():
     assert fp["channel"] == "NIP"
     assert fp["amount_band"] == "50k-500k"
     assert "landlord" in fp["payee_pattern"]
+
+
+def test_uber_web_and_pos_share_payee_pattern():
+    base = {
+        "source_provider": "mono",
+        "merchant_name": "Uber Trip",
+        "amount": 12000,
+    }
+    web = {
+        **base,
+        "raw_metadata": {
+            "narration": "Sent to Uber Trip (WEB)",
+            "metadata": {"channel": "WEB"},
+        },
+    }
+    pos = {
+        **base,
+        "raw_metadata": {
+            "narration": "Sent to Uber Trip (POS)",
+            "metadata": {"channel": "POS"},
+        },
+    }
+    assert extract_fingerprint(web)["payee_pattern"] == extract_fingerprint(pos)["payee_pattern"]
+    assert extract_fingerprint(web)["channel"] != extract_fingerprint(pos)["channel"]

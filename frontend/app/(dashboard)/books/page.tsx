@@ -404,8 +404,21 @@ function BooksQueueContent() {
     setActionLoading(row.id);
     setError(null);
     try {
-      await approveTransaction(row.id, accountId, post);
-      setInfo(post ? "Approved and posted to QuickBooks" : "Approved — training saved");
+      const result = await approveTransaction(row.id, accountId, post);
+      const similar = result.similar_updated ?? 0;
+      if (post) {
+        setInfo(
+          similar > 0
+            ? `Posted to QuickBooks — ${similar} similar transaction${similar === 1 ? "" : "s"} updated`
+            : "Approved and posted to QuickBooks"
+        );
+      } else {
+        setInfo(
+          similar > 0
+            ? `Training saved — ${similar} similar transaction${similar === 1 ? "" : "s"} pre-filled`
+            : "Training saved — similar payees will be suggested next"
+        );
+      }
       await refreshData();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Approve failed");
