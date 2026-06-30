@@ -26,7 +26,8 @@ export interface ApiFetchOptions extends RequestInit {
 export class ApiError extends Error {
   constructor(
     message: string,
-    public status: number
+    public status: number,
+    public detail?: unknown
   ) {
     super(message);
     this.name = "ApiError";
@@ -74,8 +75,10 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
           ? detail
           : Array.isArray(detail)
             ? detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join("; ") || res.statusText
-            : res.statusText || "Request failed";
-      throw new ApiError(message, res.status);
+            : typeof detail === "object" && detail !== null && "message" in detail
+              ? String((detail as { message?: string }).message)
+              : res.statusText || "Request failed";
+      throw new ApiError(message, res.status, detail);
     }
 
     if (res.status === 204) return undefined as T;

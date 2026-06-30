@@ -178,3 +178,44 @@ async def qbo_bank_account_balance(user_id: str, qb_bank_account_id: str) -> flo
         return None
     except Exception:
         return None
+
+
+async def qbo_bank_register_net_through(
+    user_id: str,
+    qb_bank_account_id: str,
+    period_end: str,
+) -> float:
+    """Net signed bank-register movement through period_end (inclusive)."""
+    lines = await load_qbo_bank_activity(
+        user_id,
+        qb_bank_account_id=qb_bank_account_id,
+        period_start="1970-01-01",
+        period_end=period_end,
+    )
+    return round(sum(float(line.get("signed_amount") or 0) for line in lines), 2)
+
+
+async def qbo_bank_account_balance_as_of(
+    user_id: str,
+    qb_bank_account_id: str,
+    period_end: str,
+    *,
+    opening_balance_amount: float | None = None,
+    opening_balance_as_of: str | None = None,
+) -> tuple[float, str, str | None]:
+    """Return (balance, source, warning)."""
+    if opening_balance_amount is not None and opening_balance_as_of:
+        start = opening_balance_as_of[:10]
+        if start <= period_end[:10]:
+            activity = await load_qbo_bank_activity(
+                user_id,
+                qb_bank_account_id=qb_bank_account_id,
+                period_start=start,
+                period_end=period_end,
+            )
+            net = sum(float(line.get("signed_amount") or 0) for line in activity)
+            return round(float(opening_balance_amount) + net, 2), "opening_plus_activity", None
+
+    current = await qbo_bank_account_balance(user_id, qb_bank_account_id)
+    warning = "Opening balance not set — book balance may not reflect bank"
+    return float(current or 0), "current_balance_fallback", warning

@@ -9,14 +9,18 @@ import { PageLoader } from "@/components/ui/page-loader";
 import { Spinner } from "@/components/ui/spinner";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
+  getOpeningBalancePreview,
   getQuickBooksStatus,
   listCoa,
   listMappings,
+  postOpeningBalance,
   syncCoa,
   upsertMapping,
   type AccountMapping,
   type CoaAccount,
+  type OpeningBalancePreview,
 } from "@/lib/books";
+import { formatCurrency } from "@/lib/utils";
 
 interface BankAccount {
   id: string;
@@ -26,6 +30,146 @@ interface BankAccount {
 
 const selectClass =
   "h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500";
+
+function OpeningBalancePanel({
+  accountId,
+  qbAccountId,
+  onPosted,
+}: {
+  accountId: string;
+  qbAccountId: string;
+  onPosted: () => void;
+}) {
+  const [preview, setPreview] = useState<OpeningBalancePreview | null>(null);
+  const [amount, setAmount] = useState("");
+  const [asOf, setAsOf] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const loadPreview = useCallback(async () => {
+    if (!qbAccountId) return;
+    setLoading(true);
+    setLocalError(null);
+    try {
+      const p = await getOpeningBalancePreview(accountId);
+      setPreview(p);
+      if (p.opening_balance_amount != null) {
+        setAmount(String(p.opening_balance_amount));
+      } else if (p.suggested_mono_balance > 0) {
+        setAmount(String(p.suggested_mono_balance));
+      }
+      if (p.opening_balance_as_of) {
+        setAsOf(p.opening_balance_as_of.slice(0, 10));
+      } else {
+        setAsOf(new Date().toISOString().slice(0, 10));
+      }
+    } catch (e) {
+      setLocalError(e instanceof ApiError ? e.message : "Failed to load opening balance preview");
+    } finally {
+      setLoading(false);
+    }
+  }, [accountId, qbAccountId]);
+
+  useEffect(() => {
+    void loadPreview();
+  }, [loadPreview]);
+
+  async function handlePost() {
+    const parsed = parseFloat(amount);
+    if (!parsed || parsed <= 0) {
+      setLocalError("Enter a positive opening balance amount");
+      return;
+    }
+    if (!asOf) {
+      setLocalError("Select an as-of date");
+      return;
+    }
+    setPosting(true);
+    setLocalError(null);
+    try {
+      await postOpeningBalance(accountId, {
+        amount: parsed,
+        as_of_date: asOf,
+        qb_bank_account_id: qbAccountId,
+      });
+      onPosted();
+      await loadPreview();
+    } catch (e) {
+      setLocalError(e instanceof ApiError ? e.message : "Failed to post opening balance");
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  if (!qbAccountId) return null;
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
+      <p className="text-sm font-medium text-white">Opening balance</p>
+      <p className="mt-1 text-xs text-slate-500">
+        Post a journal entry (Debit bank · Credit Opening Balance Equity) so QuickBooks book balance
+        aligns with the bank at conversion.
+      </p>
+      {loading && !preview ? (
+        <p className="mt-2 text-xs text-slate-500">Loading suggested balance…</p>
+      ) : (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div>
+            <p className="text-xs text-slate-500">
+              Suggested from Mono ({preview?.mono_balance_source ?? "—"})
+            </p>
+            <p className="text-sm font-medium text-white">
+              {formatCurrency(preview?.suggested_mono_balance ?? 0, preview?.currency ?? "NGN")}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">QBO current balance</p>
+            <p className="text-sm font-medium text-white">
+              {preview?.qbo_current_balance != null
+                ? formatCurrency(preview.qbo_current_balance, preview?.currency ?? "NGN")
+                : "—"}
+            </p>
+          </div>
+          <label className="text-xs text-slate-400">
+            Amount (NGN)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              className={`${selectClass} mt-1`}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              disabled={preview?.already_posted}
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            As-of date
+            <input
+              type="date"
+              className={`${selectClass} mt-1`}
+              value={asOf}
+              onChange={(e) => setAsOf(e.target.value)}
+              disabled={preview?.already_posted}
+            />
+          </label>
+        </div>
+      )}
+      {preview?.already_posted && (
+        <p className="mt-2 text-xs text-emerald-400">
+          Opening balance posted (JE {preview.opening_balance_qb_journal_id ?? "—"})
+        </p>
+      )}
+      {localError && <p className="mt-2 text-xs text-red-400">{localError}</p>}
+      {!preview?.already_posted && (
+        <Button className="mt-3" size="sm" disabled={posting || loading} onClick={() => void handlePost()}>
+          {posting ? <Spinner size="sm" className="mr-2" /> : null}
+          Post opening balance to QuickBooks
+        </Button>
+      )}
+    </div>
+  );
+}
 
 export default function BooksMappingsPage() {
   const [qbConnected, setQbConnected] = useState<boolean | null>(null);
@@ -183,23 +327,32 @@ export default function BooksMappingsPage() {
             <p className="text-sm text-slate-500">Connect a Plaid or Mono bank account first.</p>
           ) : (
             bankAccounts.map((bank) => (
-              <div key={bank.id} className="grid gap-2 md:grid-cols-2 md:items-center">
-                <div>
-                  <p className="font-medium text-white">{bank.account_name}</p>
-                  <p className="text-xs text-slate-500">{bank.provider}</p>
+              <div key={bank.id} className="border-b border-slate-800/60 pb-4 last:border-0 last:pb-0">
+                <div className="grid gap-2 md:grid-cols-2 md:items-center">
+                  <div>
+                    <p className="font-medium text-white">{bank.account_name}</p>
+                    <p className="text-xs text-slate-500">{bank.provider}</p>
+                  </div>
+                  <select
+                    className={selectClass}
+                    value={bankMappingFor(bank.id)}
+                    onChange={(e) => saveBankMapping(bank.id, e.target.value)}
+                  >
+                    <option value="">Select QB bank account…</option>
+                    {bankCoa.map((a) => (
+                      <option key={a.qb_account_id} value={a.qb_account_id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <select
-                  className={selectClass}
-                  value={bankMappingFor(bank.id)}
-                  onChange={(e) => saveBankMapping(bank.id, e.target.value)}
-                >
-                  <option value="">Select QB bank account…</option>
-                  {bankCoa.map((a) => (
-                    <option key={a.qb_account_id} value={a.qb_account_id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
+                {bankMappingFor(bank.id) ? (
+                  <OpeningBalancePanel
+                    accountId={bank.id}
+                    qbAccountId={bankMappingFor(bank.id)}
+                    onPosted={() => setMessage("Opening balance posted to QuickBooks")}
+                  />
+                ) : null}
               </div>
             ))
           )}

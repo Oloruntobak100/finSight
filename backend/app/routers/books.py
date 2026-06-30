@@ -20,6 +20,9 @@ from app.models.books import (
     IntentRequest,
     MappingResponse,
     MappingUpsertRequest,
+    OpeningBalancePostRequest,
+    OpeningBalancePostResponse,
+    OpeningBalancePreviewResponse,
     PostRequest,
     PostResponse,
     QbPartyCreateRequest,
@@ -62,11 +65,26 @@ from app.services.qb_party_service import (
     suggest_party_for_txn,
     sync_parties,
 )
-from app.services.quickbooks_service import get_connection_status, sync_chart_of_accounts
+from app.services.opening_balance_service import get_opening_balance_preview, post_opening_balance
 from app.database import get_supabase, run_db
 
 router = APIRouter(prefix="/books", tags=["books"])
 logger = logging.getLogger(__name__)
+
+
+def _closed_period_http(exc: ValueError) -> HTTPException | None:
+    msg = str(exc)
+    if msg.startswith("CLOSED_PERIOD:"):
+        txn_date = msg.split(":", 1)[1]
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "CLOSED_PERIOD",
+                "transaction_date": txn_date,
+                "message": "This transaction occurred in a closed accounting period.",
+            },
+        )
+    return None
 
 
 async def _ensure_qb_connected(user_id: str) -> None:
@@ -297,9 +315,14 @@ async def approve_txn(user_id: CurrentUser, body: ApproveRequest) -> ApproveResp
             payment_account_id=body.payment_account_id,
             final_party_id=body.final_party_id,
             final_party_type=body.final_party_type,
+            closed_period_path=body.closed_period_path,
+            closed_period_reason=body.closed_period_reason,
         )
         return ApproveResponse(**result)
     except ValueError as exc:
+        closed = _closed_period_http(exc)
+        if closed:
+            raise closed from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -355,8 +378,43 @@ async def set_intent(user_id: CurrentUser, body: IntentRequest) -> dict:
 async def post_transaction(user_id: CurrentUser, body: PostRequest) -> PostResponse:
     await _ensure_qb_connected(user_id)
     try:
-        result = await post_txn_service(user_id, body.transaction_id)
+        result = await post_txn_service(
+            user_id,
+            body.transaction_id,
+            closed_period_path=body.closed_period_path,
+            closed_period_reason=body.closed_period_reason,
+        )
         return PostResponse(**result)
+    except ValueError as exc:
+        closed = _closed_period_http(exc)
+        if closed:
+            raise closed from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/mappings/{account_id}/opening-balance-preview", response_model=OpeningBalancePreviewResponse)
+async def opening_balance_preview(user_id: CurrentUser, account_id: str) -> OpeningBalancePreviewResponse:
+    await _ensure_qb_connected(user_id)
+    data = await get_opening_balance_preview(user_id, account_id)
+    return OpeningBalancePreviewResponse(**data)
+
+
+@router.post("/mappings/{account_id}/opening-balance", response_model=OpeningBalancePostResponse)
+async def opening_balance_post(
+    user_id: CurrentUser,
+    account_id: str,
+    body: OpeningBalancePostRequest,
+) -> OpeningBalancePostResponse:
+    await _ensure_qb_connected(user_id)
+    try:
+        result = await post_opening_balance(
+            user_id,
+            account_id,
+            amount=body.amount,
+            as_of_date=body.as_of_date,
+            qb_bank_account_id=body.qb_bank_account_id,
+        )
+        return OpeningBalancePostResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

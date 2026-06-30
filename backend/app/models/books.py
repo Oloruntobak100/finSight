@@ -75,6 +75,9 @@ class QueueItemResponse(BaseModel):
     qb_posting_type: Optional[str] = None
     qb_entity_id: Optional[str] = None
     qb_posted_at: Optional[str] = None
+    posted_date: Optional[str] = None
+    discovered_date: Optional[str] = None
+    posting_lag_days: Optional[int] = None
     qb_error: Optional[str] = None
 
 
@@ -99,6 +102,37 @@ class QueueGroupResponse(BaseModel):
 
 class PostRequest(BaseModel):
     transaction_id: str
+    closed_period_path: Optional[Literal["true_date", "catch_up_today"]] = None
+    closed_period_reason: Optional[str] = None
+
+
+class OpeningBalancePreviewResponse(BaseModel):
+    account_id: str
+    qb_account_id: Optional[str] = None
+    qb_account_name: Optional[str] = None
+    suggested_mono_balance: float = 0
+    mono_balance_source: str = "none"
+    qbo_current_balance: Optional[float] = None
+    currency: str = "NGN"
+    already_posted: bool = False
+    opening_balance_amount: Optional[float] = None
+    opening_balance_as_of: Optional[str] = None
+    opening_balance_qb_journal_id: Optional[str] = None
+    opening_balance_posted_at: Optional[str] = None
+
+
+class OpeningBalancePostRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    as_of_date: str = Field(..., min_length=10, max_length=10)
+    qb_bank_account_id: Optional[str] = None
+
+
+class OpeningBalancePostResponse(BaseModel):
+    posted: bool
+    journal_entry_id: str
+    amount: float
+    as_of_date: str
+    qb_bank_account_id: str
 
 
 class BulkPostRequest(BaseModel):
@@ -112,6 +146,8 @@ class ApproveRequest(BaseModel):
     payment_account_id: Optional[str] = None
     final_party_id: Optional[str] = None
     final_party_type: Optional[Literal["Vendor", "Customer"]] = None
+    closed_period_path: Optional[Literal["true_date", "catch_up_today"]] = None
+    closed_period_reason: Optional[str] = None
 
 
 class BulkApproveItem(BaseModel):

@@ -38,6 +38,8 @@ export default function ReconciliationSetupPage() {
     variance: number;
     currency: string;
     monoSource: string;
+    qboAsOf?: string;
+    openingWarning?: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -71,6 +73,8 @@ export default function ReconciliationSetupPage() {
         variance: p.raw_variance,
         currency: p.currency,
         monoSource: p.mono_balance_source,
+        qboAsOf: p.qbo_balance_as_of_date,
+        openingWarning: p.opening_balance_warning,
       });
     } catch {
       setPreview(null);
@@ -168,20 +172,33 @@ export default function ReconciliationSetupPage() {
           </div>
 
           {preview && (
-            <div className="grid gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4 sm:grid-cols-3">
-              <div>
-                <p className="text-xs text-slate-500">Mono closing ({preview.monoSource})</p>
-                <p className="text-lg font-semibold text-white">{formatCurrency(preview.mono, preview.currency)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-500">QuickBooks book balance</p>
-                <p className="text-lg font-semibold text-white">{formatCurrency(preview.qbo, preview.currency)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-500">Raw variance</p>
-                <p className={`text-lg font-semibold ${preview.variance === 0 ? "text-emerald-400" : "text-amber-400"}`}>
-                  {formatCurrency(preview.variance, preview.currency)}
-                </p>
+            <div className="space-y-3">
+              {preview.openingWarning && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                  {preview.openingWarning}{" "}
+                  <Link href="/books/mappings" className="underline">
+                    Set opening balance
+                  </Link>
+                </div>
+              )}
+              <div className="grid gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4 sm:grid-cols-3">
+                <div>
+                  <p className="text-xs text-slate-500">Mono closing ({preview.monoSource})</p>
+                  <p className="text-lg font-semibold text-white">{formatCurrency(preview.mono, preview.currency)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">
+                    QuickBooks book balance
+                    {preview.qboAsOf ? ` (as of ${preview.qboAsOf})` : ""}
+                  </p>
+                  <p className="text-lg font-semibold text-white">{formatCurrency(preview.qbo, preview.currency)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500">Raw variance</p>
+                  <p className={`text-lg font-semibold ${preview.variance === 0 ? "text-emerald-400" : "text-amber-400"}`}>
+                    {formatCurrency(preview.variance, preview.currency)}
+                  </p>
+                </div>
               </div>
             </div>
           )}

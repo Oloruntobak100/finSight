@@ -1,6 +1,6 @@
 import asyncio
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from typing import Any
 
@@ -406,6 +406,8 @@ async def _upsert_mono_transactions(
             user_rules=user_rules,
 
         )
+
+        row["discovered_date"] = datetime.now(timezone.utc).isoformat()
 
         if not row["transaction_date"]:
 

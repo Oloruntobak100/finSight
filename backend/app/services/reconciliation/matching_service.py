@@ -12,10 +12,16 @@ from app.services.books_service import _mapping_lookup, get_mappings
 from app.services.qb_party_service import normalize_party_lookup
 from app.services.reconciliation.audit_service import log_audit
 from app.services.reconciliation.balance_proof_service import recalculate_balance_proof
-from app.services.reconciliation.constants import AUTO_MATCH_THRESHOLD
 from app.services.reconciliation.mono_bank_activity import load_mono_bank_activity, mono_closing_balance
-from app.services.reconciliation.qbo_bank_activity import load_qbo_bank_activity, qbo_bank_account_balance
-from app.services.reconciliation.scoring import classify_score, compute_match_score, is_nip_timing_difference
+from app.services.reconciliation.qbo_bank_activity import load_qbo_bank_activity, qbo_bank_account_balance_as_of
+from app.services.reconciliation.setup_service import preview_balances
+from app.services.reconciliation.scoring import (
+    AUTO_MATCH_THRESHOLD,
+    classify_score,
+    compute_match_score,
+    is_amount_only_match,
+    is_nip_timing_difference,
+)
 
 ITEM_INSERT_CHUNK = 500
 OUTSTANDING_INSERT_CHUNK = 500
@@ -179,7 +185,14 @@ async def run_matching_engine(
     timing_patterns = await _load_timing_patterns(user_id)
     open_outstanding = await _load_open_outstanding(user_id, mono_account_id, resolved_qb)
 
-    mono_lines, qbo_lines, (mono_balance, currency, balance_source), qbo_balance = await asyncio.gather(
+    preview = await preview_balances(
+        user_id,
+        mono_account_id=mono_account_id,
+        qb_bank_account_id=resolved_qb,
+        period_end=period_end,
+    )
+
+    mono_lines, qbo_lines = await asyncio.gather(
         load_mono_bank_activity(
             user_id,
             mono_account_id=mono_account_id,
@@ -192,9 +205,12 @@ async def run_matching_engine(
             period_start=period_start,
             period_end=period_end,
         ),
-        mono_closing_balance(user_id, mono_account_id, period_end),
-        qbo_bank_account_balance(user_id, resolved_qb),
     )
+
+    mono_balance = preview["mono_closing_balance"]
+    currency = preview["currency"]
+    balance_source = preview["mono_balance_source"]
+    qbo_balance = preview["qbo_book_balance"]
 
     sb = get_supabase()
     run_row = {
@@ -206,6 +222,8 @@ async def run_matching_engine(
         "mono_closing_balance": mono_balance,
         "qbo_book_balance": qbo_balance,
         "mono_balance_source": balance_source,
+        "qbo_balance_as_of_date": period_end[:10],
+        "opening_balance_warning": preview.get("opening_balance_warning"),
         "status": "DRAFT",
         "created_by": user_id,
         "snapshot_mono_data": mono_lines,
@@ -223,7 +241,7 @@ async def run_matching_engine(
     used_qbo: set[str] = set()
     items_to_insert: list[dict[str, Any]] = []
 
-    # Pass 1 — exact match by qb_entity_id
+    # Pass 1 — exact match by qb_entity_id + transaction_date
     for mono in mono_lines:
         entity_id = mono.get("qb_entity_id")
         if not entity_id or mono.get("qb_sync_status") != "posted":
@@ -231,9 +249,27 @@ async def run_matching_engine(
         qbo = qbo_by_id.get(str(entity_id))
         if not qbo:
             continue
-        used_mono.add(mono.get("mono_transaction_id") or "")
+        mid = mono.get("mono_transaction_id") or ""
+        mono_date = str(mono.get("transaction_date") or "")[:10]
+        qbo_date = str(qbo.get("transaction_date") or "")[:10]
+        if mono_date != qbo_date:
+            used_mono.add(mid)
+            used_qbo.add(qbo["qbo_entity_id"])
+            merged = {**mono, **qbo, "source": "BOTH", "mono_transaction_date": mono_date, "qbo_transaction_date": qbo_date}
+            items_to_insert.append(
+                _item_row(
+                    run_id=run_id,
+                    user_id=user_id,
+                    source="BOTH",
+                    match_status="FLAG_FOR_REVIEW",
+                    line=merged,
+                    match_score=0.5,
+                )
+            )
+            continue
+        used_mono.add(mid)
         used_qbo.add(qbo["qbo_entity_id"])
-        merged = {**mono, **qbo, "source": "BOTH"}
+        merged = {**mono, **qbo, "source": "BOTH", "mono_transaction_date": mono_date, "qbo_transaction_date": qbo_date}
         items_to_insert.append(
             _item_row(
                 run_id=run_id,
@@ -327,7 +363,32 @@ async def run_matching_engine(
                 best_score = score
                 best_qbo = qbo
 
-        if best_qbo and best_score >= AUTO_MATCH_THRESHOLD:
+        if best_qbo and is_amount_only_match(
+            mono["amount"],
+            best_qbo["amount"],
+            mono.get("transaction_date"),
+            best_qbo.get("transaction_date"),
+        ):
+            used_mono.add(mono.get("mono_transaction_id") or "")
+            used_qbo.add(best_qbo["qbo_entity_id"])
+            merged = {
+                **mono,
+                **best_qbo,
+                "source": "BOTH",
+                "mono_transaction_date": mono.get("transaction_date"),
+                "qbo_transaction_date": best_qbo.get("transaction_date"),
+            }
+            items_to_insert.append(
+                _item_row(
+                    run_id=run_id,
+                    user_id=user_id,
+                    source="BOTH",
+                    match_status="AMOUNT_MATCH_SUGGESTED",
+                    line=merged,
+                    match_score=best_score,
+                )
+            )
+        elif best_qbo and best_score >= AUTO_MATCH_THRESHOLD:
             used_mono.add(mono.get("mono_transaction_id") or "")
             used_qbo.add(best_qbo["qbo_entity_id"])
             merged = {**mono, **best_qbo, "source": "BOTH"}
@@ -431,12 +492,23 @@ async def run_matching_engine(
         st = item["match_status"]
         counts[st] = counts.get(st, 0) + 1
 
+    lags = [int(line["posting_lag_days"]) for line in mono_lines if line.get("posting_lag_days") is not None]
+    posting_lag_stats: dict[str, Any] = {}
+    if lags:
+        sorted_lags = sorted(lags)
+        mid = len(sorted_lags) // 2
+        posting_lag_stats = {
+            "median_posting_lag_days": sorted_lags[mid],
+            "p95_posting_lag_days": sorted_lags[min(len(sorted_lags) - 1, int(len(sorted_lags) * 0.95))],
+        }
+
     summary = {
         "counts": counts,
         "mono_line_count": len(mono_lines),
         "qbo_line_count": len(qbo_lines),
         "currency": currency,
         "mono_balance_source": balance_source,
+        **posting_lag_stats,
     }
 
     await run_db(
@@ -494,11 +566,11 @@ async def update_item(
         raise ValueError("This reconciliation is locked and cannot be modified")
 
     update: dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    if confirm_suggested and item.get("match_status") == "SUGGESTED":
+    if confirm_suggested and item.get("match_status") in ("SUGGESTED", "AMOUNT_MATCH_SUGGESTED"):
         update["match_status"] = "MATCHED_FUZZY"
         update["manually_matched_by"] = user_id
         update["manually_matched_at"] = datetime.now(timezone.utc).isoformat()
-    elif reject_suggested and item.get("match_status") == "SUGGESTED":
+    elif reject_suggested and item.get("match_status") in ("SUGGESTED", "AMOUNT_MATCH_SUGGESTED"):
         update["match_status"] = "UNEXPLAINED"
         update["source"] = "MONO" if item.get("mono_transaction_id") else "QBO"
     elif match_status:
@@ -558,4 +630,33 @@ async def list_items(
     if match_status:
         query = query.eq("match_status", match_status)
     res = await run_db(lambda: query.execute())
-    return res.data or []
+    items = res.data or []
+    if not items:
+        return items
+
+    mono_ids = [i["mono_transaction_id"] for i in items if i.get("mono_transaction_id")]
+    txn_map: dict[str, dict[str, Any]] = {}
+    if mono_ids:
+        txn_res = await run_db(
+            lambda: sb.table("transactions")
+            .select("id, transaction_date, qb_posted_at, posting_lag_days")
+            .in_("id", mono_ids)
+            .execute()
+        )
+        txn_map = {r["id"]: r for r in (txn_res.data or [])}
+
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        row = dict(item)
+        mid = item.get("mono_transaction_id")
+        txn = txn_map.get(mid) if mid else None
+        if txn:
+            row["posted_date"] = txn.get("qb_posted_at")
+            row["posting_lag_days"] = txn.get("posting_lag_days")
+            row["mono_transaction_date"] = str(txn.get("transaction_date") or item.get("transaction_date"))[:10]
+        else:
+            row["mono_transaction_date"] = str(item.get("transaction_date") or "")[:10]
+        if item.get("source") in ("BOTH", "QBO"):
+            row["qbo_transaction_date"] = str(item.get("transaction_date") or "")[:10]
+        enriched.append(row)
+    return enriched

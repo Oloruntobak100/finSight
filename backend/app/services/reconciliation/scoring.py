@@ -35,7 +35,7 @@ def amount_score(a: float, b: float, tolerance_pct: float = 0.01) -> float:
     return 0.0
 
 
-def date_proximity_score(date_a: str | None, date_b: str | None, max_days: int = 3) -> float:
+def date_proximity_score(date_a: str | None, date_b: str | None, max_days: int = 1) -> float:
     da = _parse_date(date_a)
     db = _parse_date(date_b)
     if not da or not db:
@@ -84,14 +84,27 @@ def compute_match_score(
     payee_b: str | None = None,
     ref_a: str | None = None,
     ref_b: str | None = None,
+    max_date_days: int = 1,
 ) -> float:
     score = (
         amount_score(amount_a, amount_b) * 0.40
-        + date_proximity_score(date_a, date_b) * 0.25
+        + date_proximity_score(date_a, date_b, max_days=max_date_days) * 0.25
         + payee_similarity_score(payee_a, payee_b) * 0.20
         + reference_match_score(ref_a, ref_b) * 0.15
     )
     return round(min(1.0, max(0.0, score)), 4)
+
+
+def is_amount_only_match(
+    amount_a: float,
+    amount_b: float,
+    date_a: str | None,
+    date_b: str | None,
+) -> bool:
+    """Tier 3: same amount but dates more than max fuzzy window apart."""
+    if amount_score(amount_a, amount_b) < 1.0:
+        return False
+    return date_proximity_score(date_a, date_b, max_days=1) == 0.0
 
 
 def classify_score(score: float) -> str:

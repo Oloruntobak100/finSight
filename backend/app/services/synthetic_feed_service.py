@@ -24,6 +24,22 @@ from app.services.transaction_enrichment import build_mono_transaction_row, load
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SYNTHETIC_OPENING_BALANCE_NAIRA = 2_000_000.0
+
+
+def apply_running_balances(payloads: list[dict[str, Any]], *, opening_naira: float = DEFAULT_SYNTHETIC_OPENING_BALANCE_NAIRA) -> list[dict[str, Any]]:
+    """Assign coherent running balances in kobo on synthetic Mono payloads."""
+    sorted_payloads = sorted(payloads, key=lambda p: p.get("date") or "")
+    balance_naira = opening_naira
+    for raw in sorted_payloads:
+        amount_naira = float(raw.get("amount", 0)) / 100.0
+        if raw.get("type") == "credit":
+            balance_naira += amount_naira
+        else:
+            balance_naira -= amount_naira
+        raw["balance"] = int(round(balance_naira * 100))
+    return sorted_payloads
+
 
 async def _classify_created_transactions(user_id: str, created_ids: list[str]) -> None:
     try:
@@ -287,6 +303,7 @@ async def _insert_synthetic_transactions(
         if not row.get("transaction_date"):
             row["transaction_date"] = str(date.today())
         row["is_synthetic"] = True
+        row["discovered_date"] = datetime.now(timezone.utc).isoformat()
         rows.append(row)
 
     batch_size = 50
@@ -376,6 +393,7 @@ async def fill_sparse_history(
             if sibling:
                 payloads.append(sibling.raw)
 
+        payloads = apply_running_balances(payloads)
         created_ids = await _insert_synthetic_transactions(
             user_id, account_id, payloads, external_prefix="syn-hist-"
         )
@@ -434,6 +452,7 @@ async def run_live_drip(profile: dict[str, Any]) -> dict[str, Any]:
             if sibling:
                 payloads.append(sibling.raw)
 
+        payloads = apply_running_balances(payloads)
         created_ids = await _insert_synthetic_transactions(
             user_id, account_id, payloads, external_prefix="syn-live-"
         )

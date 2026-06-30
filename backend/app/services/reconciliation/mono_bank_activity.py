@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.database import get_supabase, run_db
+from app.services.mono_money import normalize_mono_balance
 from app.services.qb_party_service import txn_doc_number
 
 BANK_PROVIDERS = ("plaid", "mono")
@@ -30,7 +31,8 @@ async def load_mono_bank_activity(
         lambda: sb.table("transactions")
         .select(
             "id, transaction_date, amount, currency, transaction_type, "
-            "merchant_name, description, qb_entity_id, qb_entity_type, qb_sync_status"
+            "merchant_name, description, qb_entity_id, qb_entity_type, qb_sync_status, "
+            "qb_posted_at, posting_lag_days, discovered_date"
         )
         .eq("user_id", user_id)
         .eq("account_id", mono_account_id)
@@ -58,6 +60,9 @@ async def load_mono_bank_activity(
                 "qb_entity_id": row.get("qb_entity_id"),
                 "qb_entity_type": row.get("qb_entity_type"),
                 "qb_sync_status": row.get("qb_sync_status"),
+                "posted_date": row.get("qb_posted_at"),
+                "posting_lag_days": row.get("posting_lag_days"),
+                "discovered_date": row.get("discovered_date"),
             }
         )
     return normalized
@@ -87,7 +92,7 @@ async def mono_closing_balance(
         raw = row.get("raw_metadata") or {}
         bal = raw.get("balance")
         if bal is not None:
-            return float(bal), row.get("currency") or "NGN", "metadata"
+            return normalize_mono_balance(bal), row.get("currency") or "NGN", "metadata"
 
     all_res = await run_db(
         lambda: sb.table("transactions")

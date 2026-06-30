@@ -3,7 +3,7 @@ from typing import Any
 
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 
-from app.database import get_supabase, run_db
+from app.services.mono_money import normalize_mono_balance
 from app.models.analysis_filters import AnalysisFilters
 from app.services.plaid_service import _get_plaid_client, _plaid_to_dict
 from app.services.token_service import decrypt_token
@@ -24,7 +24,7 @@ async def _mono_balance_from_transactions(sb: Any, user_id: str, account_id: str
         return 0.0, "NGN"
     row = res.data[0]
     raw = row.get("raw_metadata") or {}
-    balance = float(raw.get("balance") or 0)
+    balance = normalize_mono_balance(raw.get("balance"))
     currency = row.get("currency") or "NGN"
     return balance, currency
 

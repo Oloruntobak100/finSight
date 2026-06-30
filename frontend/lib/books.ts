@@ -99,6 +99,9 @@ export interface QueueItem {
   qb_entity_id?: string | null;
   qb_doc_number?: string | null;
   qb_posted_at?: string | null;
+  posted_date?: string | null;
+  discovered_date?: string | null;
+  posting_lag_days?: number | null;
   qb_error?: string | null;
 }
 
@@ -275,7 +278,11 @@ export async function approveTransaction(
   transactionId: string,
   finalAccountId: string,
   post = true,
-  party?: { id: string; type: QbPartyType }
+  party?: { id: string; type: QbPartyType },
+  opts?: {
+    closedPeriodPath?: "true_date" | "catch_up_today";
+    closedPeriodReason?: string;
+  }
 ): Promise<{ approved: boolean; similar_updated?: number }> {
   return apiFetch("/books/approve", {
     method: "POST",
@@ -285,6 +292,8 @@ export async function approveTransaction(
       post,
       final_party_id: party?.id ?? null,
       final_party_type: party?.type ?? null,
+      closed_period_path: opts?.closedPeriodPath,
+      closed_period_reason: opts?.closedPeriodReason,
     }),
     timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
   });
@@ -335,10 +344,49 @@ export async function rejectSuggestion(transactionId: string): Promise<unknown> 
   });
 }
 
-export async function postTransaction(transactionId: string): Promise<unknown> {
+export interface OpeningBalancePreview {
+  account_id: string;
+  qb_account_id?: string | null;
+  qb_account_name?: string | null;
+  suggested_mono_balance: number;
+  mono_balance_source: string;
+  qbo_current_balance?: number | null;
+  currency: string;
+  already_posted: boolean;
+  opening_balance_amount?: number | null;
+  opening_balance_as_of?: string | null;
+  opening_balance_qb_journal_id?: string | null;
+}
+
+export async function getOpeningBalancePreview(accountId: string): Promise<OpeningBalancePreview> {
+  return apiFetch(`/books/mappings/${accountId}/opening-balance-preview`);
+}
+
+export async function postOpeningBalance(
+  accountId: string,
+  body: { amount: number; as_of_date: string; qb_bank_account_id?: string }
+): Promise<{ posted: boolean; journal_entry_id: string; amount: number; as_of_date: string }> {
+  return apiFetch(`/books/mappings/${accountId}/opening-balance`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
+  });
+}
+
+export async function postTransaction(
+  transactionId: string,
+  opts?: {
+    closedPeriodPath?: "true_date" | "catch_up_today";
+    closedPeriodReason?: string;
+  }
+): Promise<unknown> {
   return apiFetch("/books/post", {
     method: "POST",
-    body: JSON.stringify({ transaction_id: transactionId }),
+    body: JSON.stringify({
+      transaction_id: transactionId,
+      closed_period_path: opts?.closedPeriodPath,
+      closed_period_reason: opts?.closedPeriodReason,
+    }),
     timeoutMs: BOOKS_APPROVE_TIMEOUT_MS,
   });
 }

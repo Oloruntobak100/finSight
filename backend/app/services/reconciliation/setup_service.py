@@ -9,7 +9,7 @@ from typing import Any
 from app.services.bank_transaction_scope import get_active_bank_accounts
 from app.services.books_service import _mapping_lookup, get_mappings, list_coa
 from app.services.reconciliation.mono_bank_activity import mono_closing_balance
-from app.services.reconciliation.qbo_bank_activity import qbo_bank_account_balance
+from app.services.reconciliation.qbo_bank_activity import qbo_bank_account_balance_as_of
 
 
 def _last_full_month() -> tuple[str, str]:
@@ -61,13 +61,30 @@ async def preview_balances(
     period_end: str,
 ) -> dict[str, Any]:
     mono_bal, currency, source = await mono_closing_balance(user_id, mono_account_id, period_end)
-    qbo_bal = await qbo_bank_account_balance(user_id, qb_bank_account_id)
-    qbo_val = float(qbo_bal) if qbo_bal is not None else 0.0
+    mappings = await get_mappings(user_id)
+    bank_map = _mapping_lookup(mappings, "bank_account", mono_account_id)
+    opening_amount = None
+    opening_as_of = None
+    if bank_map:
+        if bank_map.get("opening_balance_amount") is not None:
+            opening_amount = float(bank_map["opening_balance_amount"])
+        opening_as_of = bank_map.get("opening_balance_as_of")
+
+    qbo_val, qbo_source, warning = await qbo_bank_account_balance_as_of(
+        user_id,
+        qb_bank_account_id,
+        period_end,
+        opening_balance_amount=opening_amount,
+        opening_balance_as_of=opening_as_of,
+    )
     variance = round(mono_bal - qbo_val, 2)
     return {
         "mono_closing_balance": mono_bal,
         "mono_balance_source": source,
         "qbo_book_balance": qbo_val,
+        "qbo_balance_source": qbo_source,
+        "qbo_balance_as_of_date": period_end[:10],
+        "opening_balance_warning": warning,
         "currency": currency,
         "raw_variance": variance,
     }

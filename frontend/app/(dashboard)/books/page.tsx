@@ -38,6 +38,14 @@ import {
 } from "@/lib/books";
 import { ApiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
+import { TransactionDateStack } from "@/components/books/transaction-date-stack";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
   { id: "unclassified", label: "New" },
@@ -50,6 +58,21 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
 
 function queueTabEditable(status: QbSyncStatus): boolean {
   return status === "pending" || status === "needs_review" || status === "failed";
+}
+
+type ClosedPeriodDetail = {
+  code: "CLOSED_PERIOD";
+  transaction_date: string;
+  message: string;
+};
+
+function parseClosedPeriodError(e: unknown): ClosedPeriodDetail | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const d = e.detail;
+  if (typeof d === "object" && d !== null && (d as ClosedPeriodDetail).code === "CLOSED_PERIOD") {
+    return d as ClosedPeriodDetail;
+  }
+  return null;
 }
 
 function kindLabel(row: QueueItem) {
@@ -453,6 +476,15 @@ function BooksQueueContent() {
   const lastQbSyncRef = useRef(0);
   const QB_SYNC_STALE_MS = 2 * 60 * 1000;
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [closedPeriodModal, setClosedPeriodModal] = useState<{
+    transactionId: string;
+    transactionDate: string;
+    mode: "post" | "approve";
+    row?: QueueItem;
+  } | null>(null);
+  const [closedPeriodChoice, setClosedPeriodChoice] = useState<"true_date" | "catch_up_today" | null>(null);
+  const [closedPeriodReason, setClosedPeriodReason] = useState("");
+  const [closedPeriodAck, setClosedPeriodAck] = useState(false);
   const showBankColumn = (readiness?.bank_accounts?.length ?? 0) > 1;
   const tableColSpan =
     6 +
@@ -853,6 +885,55 @@ function BooksQueueContent() {
     }
   }
 
+  async function submitClosedPeriodPost() {
+    if (!closedPeriodModal || !closedPeriodChoice) return;
+    if (closedPeriodChoice === "true_date" && !closedPeriodAck) {
+      setError("Acknowledge prior-period adjustment before posting at the true date");
+      return;
+    }
+    const { transactionId, mode, row } = closedPeriodModal;
+    const opts = {
+      closedPeriodPath: closedPeriodChoice,
+      closedPeriodReason: closedPeriodReason.trim() || undefined,
+    };
+    setActionLoading(transactionId);
+    setActionKind(mode === "post" ? "retry" : "post");
+    setError(null);
+    try {
+      if (mode === "post") {
+        await postTransaction(transactionId, opts);
+        setInfo("Transaction posted to QuickBooks");
+      } else if (row) {
+        const accountId = accountEdits[row.id] || row.qb_account_id;
+        if (!accountId) {
+          setError("Select a QuickBooks account first");
+          return;
+        }
+        const partyType = partyTypeForAccount(row, accountId, flatCoa);
+        const partyId = resolvePartyId(row);
+        const party =
+          partyType && partyId ? { id: partyId, type: partyType as QbPartyType } : undefined;
+        await approveTransaction(row.id, accountId, true, party, opts);
+        setInfo("Posted to QuickBooks");
+      }
+      setClosedPeriodModal(null);
+      setClosedPeriodChoice(null);
+      setClosedPeriodReason("");
+      setClosedPeriodAck(false);
+      await refreshData();
+    } catch (e) {
+      setInfo(null);
+      if (parseClosedPeriodError(e)) {
+        setError("QuickBooks still rejected this date — try catch-up or contact your accountant");
+      } else {
+        setError(e instanceof ApiError ? e.message : "Post failed");
+      }
+    } finally {
+      setActionLoading(null);
+      setActionKind(null);
+    }
+  }
+
   async function handleApprove(row: QueueItem, post = true) {
     const accountId = accountEdits[row.id] || row.qb_account_id;
     if (!accountId) {
@@ -883,7 +964,18 @@ function BooksQueueContent() {
       await refreshData();
     } catch (e) {
       setInfo(null);
-      setError(e instanceof ApiError ? e.message : "Approve failed");
+      const closed = parseClosedPeriodError(e);
+      if (closed && post) {
+        setClosedPeriodModal({
+          transactionId: row.id,
+          transactionDate: closed.transaction_date,
+          mode: "approve",
+          row,
+        });
+        setError(null);
+      } else {
+        setError(e instanceof ApiError ? e.message : "Approve failed");
+      }
     } finally {
       setActionLoading(null);
       setActionKind(null);
@@ -901,7 +993,17 @@ function BooksQueueContent() {
       await refreshData();
     } catch (e) {
       setInfo(null);
-      setError(e instanceof ApiError ? e.message : "Post failed");
+      const closed = parseClosedPeriodError(e);
+      if (closed) {
+        setClosedPeriodModal({
+          transactionId: id,
+          transactionDate: closed.transaction_date,
+          mode: "post",
+        });
+        setError(null);
+      } else {
+        setError(e instanceof ApiError ? e.message : "Post failed");
+      }
     } finally {
       setActionLoading(null);
       setActionKind(null);
@@ -1188,7 +1290,7 @@ function BooksQueueContent() {
         >
           <colgroup>
             {queueTabEditable(status) && <col className="w-10" />}
-            <col className="w-[4.25rem]" />
+            <col className="w-[7.5rem]" />
             {showBankColumn && <col className="w-[5.5rem]" />}
             <col className="w-[18%]" />
             <col className="w-[4.75rem]" />
@@ -1277,8 +1379,13 @@ function BooksQueueContent() {
                       />
                     </td>
                   )}
-                  <td className={`${cellPad} text-xs tabular-nums text-slate-400 whitespace-nowrap`}>
-                    {row.transaction_date.slice(5)}
+                  <td className={cellPad}>
+                    <TransactionDateStack
+                      transactionDate={row.transaction_date}
+                      postedDate={row.posted_date ?? row.qb_posted_at}
+                      postingLagDays={row.posting_lag_days}
+                      unposted={status !== "posted" && !row.qb_posted_at && !row.posted_date}
+                    />
                   </td>
                   {showBankColumn && (
                     <td className={`${cellPad} text-xs text-slate-500`} title={row.account_name ?? undefined}>
@@ -1407,6 +1514,96 @@ function BooksQueueContent() {
           )}
         </div>
       )}
+
+      <Dialog
+        open={closedPeriodModal !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setClosedPeriodModal(null);
+            setClosedPeriodChoice(null);
+            setClosedPeriodReason("");
+            setClosedPeriodAck(false);
+          }
+        }}
+      >
+        <DialogContent className="border-slate-800 bg-slate-900 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Closed accounting period</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              This transaction is dated{" "}
+              <span className="font-medium text-white">{closedPeriodModal?.transactionDate}</span>, but
+              QuickBooks has closed that period. Choose how to post it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <label className="flex cursor-pointer gap-3 rounded-lg border border-slate-700 p-3 hover:bg-slate-800/50">
+              <input
+                type="radio"
+                name="closedPeriodPath"
+                checked={closedPeriodChoice === "true_date"}
+                onChange={() => setClosedPeriodChoice("true_date")}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium text-white">Post at true transaction date</span>
+                <span className="mt-1 block text-slate-400">
+                  Prior-period adjustment — requires accountant acknowledgment.
+                </span>
+              </span>
+            </label>
+            {closedPeriodChoice === "true_date" && (
+              <label className="flex items-start gap-2 pl-1 text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={closedPeriodAck}
+                  onChange={(e) => setClosedPeriodAck(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-600"
+                />
+                I understand this may reopen or adjust a closed period in QuickBooks.
+              </label>
+            )}
+            <label className="flex cursor-pointer gap-3 rounded-lg border border-slate-700 p-3 hover:bg-slate-800/50">
+              <input
+                type="radio"
+                name="closedPeriodPath"
+                checked={closedPeriodChoice === "catch_up_today"}
+                onChange={() => setClosedPeriodChoice("catch_up_today")}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium text-white">Post as catch-up (today&apos;s date)</span>
+                <span className="mt-1 block text-slate-400">
+                  TxnDate will be today; the bank transaction date is preserved in FinSight for matching.
+                </span>
+              </span>
+            </label>
+            <label className="block text-slate-400">
+              Reason (optional)
+              <input
+                className="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white"
+                value={closedPeriodReason}
+                onChange={(e) => setClosedPeriodReason(e.target.value)}
+                placeholder="e.g. Month-end close completed before review"
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={() => setClosedPeriodModal(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={
+                !closedPeriodChoice ||
+                (closedPeriodChoice === "true_date" && !closedPeriodAck) ||
+                Boolean(actionLoading)
+              }
+              onClick={() => void submitClosedPeriodPost()}
+            >
+              Confirm and post
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -21,6 +21,9 @@ export interface BalancePreview {
   mono_closing_balance: number;
   mono_balance_source: string;
   qbo_book_balance: number;
+  qbo_balance_source?: string;
+  qbo_balance_as_of_date?: string;
+  opening_balance_warning?: string | null;
   currency: string;
   raw_variance: number;
 }
@@ -68,6 +71,10 @@ export interface ReconciliationItem {
   amount: number;
   currency: string;
   transaction_date?: string;
+  mono_transaction_date?: string;
+  qbo_transaction_date?: string;
+  posted_date?: string | null;
+  posting_lag_days?: number | null;
   direction?: string;
   payee?: string;
   narration?: string;
@@ -217,6 +224,7 @@ export const MATCH_STATUS_LABELS: Record<string, string> = {
   MATCHED_EXACT: "Matched (exact)",
   MATCHED_FUZZY: "Matched (fuzzy)",
   SUGGESTED: "Suggested",
+  AMOUNT_MATCH_SUGGESTED: "Amount match (confirm)",
   DEPOSITS_IN_TRANSIT: "Deposit in transit",
   OUTSTANDING_PAYMENT: "Outstanding payment",
   UNRECORDED_BANK_CREDIT: "Unrecorded credit",

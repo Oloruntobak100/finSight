@@ -9,6 +9,7 @@ from app.services.reconciliation.scoring import (
     classify_score,
     compute_match_score,
     date_proximity_score,
+    is_amount_only_match,
     is_nip_timing_difference,
     payee_similarity_score,
     reference_match_score,
@@ -29,6 +30,40 @@ def test_date_proximity_same_day():
 
 def test_date_proximity_nip_next_day():
     assert date_proximity_score("2025-06-15", "2025-06-16") == 0.85
+
+
+def test_date_proximity_beyond_one_day_is_zero():
+    assert date_proximity_score("2025-06-15", "2025-06-17") == 0.0
+
+
+def test_amount_only_match_same_amount_different_dates():
+    assert is_amount_only_match(5000, 5000, "2025-06-15", "2025-06-20") is True
+    assert is_amount_only_match(5000, 5000, "2025-06-15", "2025-06-16") is False
+
+
+def test_compute_match_score_respects_one_day_fuzzy_window():
+    score_adjacent = compute_match_score(
+        amount_a=5000,
+        amount_b=5000,
+        date_a="2025-06-15",
+        date_b="2025-06-16",
+        payee_a="Payroll Services",
+        payee_b="Payroll Services",
+        ref_a="ABC",
+        ref_b="ABC",
+    )
+    score_far = compute_match_score(
+        amount_a=5000,
+        amount_b=5000,
+        date_a="2025-06-15",
+        date_b="2025-06-20",
+        payee_a="Payroll Services",
+        payee_b="Payroll Services",
+        ref_a="ABC",
+        ref_b="ABC",
+    )
+    assert score_adjacent > score_far
+    assert score_adjacent >= AUTO_MATCH_THRESHOLD
 
 
 def test_payee_similarity():

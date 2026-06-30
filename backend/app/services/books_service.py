@@ -841,7 +841,9 @@ async def get_queue(
     items = []
     for row in res.data or []:
         aid = row.get("account_id")
-        items.append({**row, "account_name": bank_map.get(aid) if aid else None})
+        enriched = {**row, "account_name": bank_map.get(aid) if aid else None}
+        enriched["posted_date"] = row.get("qb_posted_at")
+        items.append(enriched)
 
     total = res.count or 0
     return {
@@ -1186,6 +1188,8 @@ async def approve_transaction(
     propagate_similar: bool = True,
     final_party_id: str | None = None,
     final_party_type: str | None = None,
+    closed_period_path: str | None = None,
+    closed_period_reason: str | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
     txn_res = await run_db(
@@ -1332,7 +1336,12 @@ async def approve_transaction(
         "similar_updated": similar_updated,
     }
     if post:
-        result["post"] = await post_transaction(user_id, transaction_id)
+        result["post"] = await post_transaction(
+            user_id,
+            transaction_id,
+            closed_period_path=closed_period_path,
+            closed_period_reason=closed_period_reason,
+        )
     else:
         result["transaction"] = {**txn, **update}
     return result
@@ -1528,9 +1537,58 @@ def _apply_doc_number(payload: dict[str, Any], txn: dict[str, Any]) -> dict[str,
     return payload
 
 
-def _build_deposit_payload(txn: dict[str, Any]) -> dict[str, Any]:
+def _effective_txn_date(txn: dict[str, Any], *, override_date: str | None = None) -> str:
+    if override_date:
+        return override_date[:10]
+    return str(txn.get("transaction_date") or "")[:10]
+
+
+def _assert_qbo_txn_date(txn: dict[str, Any], payload: dict[str, Any], *, allow_override: bool = False) -> None:
+    expected = _effective_txn_date(txn)
+    actual = str(payload.get("TxnDate") or "")[:10]
+    if allow_override:
+        return
+    if actual != expected:
+        raise ValueError(
+            f"QBO TxnDate must equal transaction_date ({expected}); got {actual or 'missing'}"
+        )
+
+
+def is_closed_period_error(error: str) -> bool:
+    lowered = error.lower()
+    needles = ("closed", "books closed", "account period", "invalid date", "period has closed")
+    return any(n in lowered for n in needles)
+
+
+async def _log_posting_adjustment(
+    user_id: str,
+    transaction_id: str,
+    *,
+    path: str,
+    requested_txn_date: str,
+    actual_txn_date: str,
+    reason: str | None = None,
+) -> None:
+    sb = get_supabase()
+    await run_db(
+        lambda: sb.table("posting_adjustments")
+        .insert(
+            {
+                "user_id": user_id,
+                "transaction_id": transaction_id,
+                "path": path,
+                "requested_txn_date": requested_txn_date[:10],
+                "actual_txn_date": actual_txn_date[:10],
+                "reason": reason,
+            }
+        )
+        .execute()
+    )
+
+
+def _build_deposit_payload(txn: dict[str, Any], *, txn_date: str | None = None) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
-    txn_date = str(txn.get("transaction_date"))
+    txn_date_val = _effective_txn_date(txn, override_date=txn_date)
     merchant = txn.get("merchant_name") or txn.get("description") or "Deposit"
     deposit_line_detail: dict[str, Any] = {
         "AccountRef": {"value": str(txn["qb_account_id"])},
@@ -1547,21 +1605,21 @@ def _build_deposit_payload(txn: dict[str, Any]) -> dict[str, Any]:
         line["Description"] = merchant[:4000]
     payload = {
         "DepositToAccountRef": {"value": str(txn["qb_payment_account_id"])},
-        "TxnDate": txn_date,
+        "TxnDate": txn_date_val,
         "PrivateNote": f"FinSight:{txn['id']}",
         "Line": [line],
     }
     return _apply_doc_number(payload, txn)
 
 
-def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
+def _build_purchase_payload(txn: dict[str, Any], *, txn_date: str | None = None) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
-    txn_date = str(txn.get("transaction_date"))
+    txn_date_val = _effective_txn_date(txn, override_date=txn_date)
     merchant = txn.get("merchant_name") or txn.get("description") or "Expense"
     payload = {
         "PaymentType": "Cash",
         "AccountRef": {"value": str(txn["qb_payment_account_id"])},
-        "TxnDate": txn_date,
+        "TxnDate": txn_date_val,
         "PrivateNote": f"FinSight:{txn['id']}",
         "Line": [
             {
@@ -1577,9 +1635,9 @@ def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
     return _apply_entity_and_doc(payload, txn)
 
 
-def _build_transfer_payload(txn: dict[str, Any]) -> dict[str, Any]:
+def _build_transfer_payload(txn: dict[str, Any], *, txn_date: str | None = None) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
-    txn_date = str(txn.get("transaction_date"))
+    txn_date_val = _effective_txn_date(txn, override_date=txn_date)
     feed_bank = str(txn["qb_payment_account_id"])
     other_bank = str(txn["qb_account_id"])
     if (txn.get("transaction_type") or "").lower() == "credit":
@@ -1587,7 +1645,7 @@ def _build_transfer_payload(txn: dict[str, Any]) -> dict[str, Any]:
     else:
         from_ref, to_ref = feed_bank, other_bank
     return {
-        "TxnDate": txn_date,
+        "TxnDate": txn_date_val,
         "Amount": amount,
         "PrivateNote": f"FinSight:{txn['id']}",
         "FromAccountRef": {"value": from_ref},
@@ -1595,7 +1653,14 @@ def _build_transfer_payload(txn: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool = False) -> dict[str, Any]:
+async def post_transaction(
+    user_id: str,
+    transaction_id: str,
+    *,
+    is_auto: bool = False,
+    closed_period_path: str | None = None,
+    closed_period_reason: str | None = None,
+) -> dict[str, Any]:
     sb = get_supabase()
 
     txn_res = await run_db(
@@ -1646,20 +1711,30 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     if posting_type == "refund":
         entity = "deposit"
 
+    requested_date = _effective_txn_date(txn)
+    override_txn_date: str | None = None
+    if closed_period_path == "catch_up_today":
+        override_txn_date = datetime.now(timezone.utc).date().isoformat()
+    elif closed_period_path == "true_date":
+        override_txn_date = None
+
     if entity == "transfer":
         if str(txn.get("qb_account_id")) == str(txn.get("qb_payment_account_id")):
             raise ValueError("Transfer requires two different bank accounts")
-        payload = _build_transfer_payload(txn)
+        payload = _build_transfer_payload(txn, txn_date=override_txn_date)
         api_path = "/transfer?minorversion=75"
         entity_type = "Transfer"
     elif entity == "deposit":
-        payload = _build_deposit_payload(txn)
+        payload = _build_deposit_payload(txn, txn_date=override_txn_date)
         api_path = "/deposit?minorversion=75"
         entity_type = "Deposit"
     else:
-        payload = _build_purchase_payload(txn)
+        payload = _build_purchase_payload(txn, txn_date=override_txn_date)
         api_path = "/purchase?minorversion=75"
         entity_type = "Purchase"
+
+    allow_override = closed_period_path == "catch_up_today"
+    _assert_qbo_txn_date(txn, payload, allow_override=allow_override)
 
     last_error: str | None = None
     for attempt in range(2):
@@ -1696,6 +1771,15 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
                     method="auto",
                     fingerprint_id=txn.get("fingerprint_id"),
                 )
+            if closed_period_path:
+                await _log_posting_adjustment(
+                    user_id,
+                    transaction_id,
+                    path=closed_period_path,
+                    requested_txn_date=requested_date,
+                    actual_txn_date=str(payload.get("TxnDate") or "")[:10],
+                    reason=closed_period_reason,
+                )
             return {"posted": True, "qb_entity_id": entity_id, "transaction": (res.data or [txn])[0]}
         except Exception as exc:
             last_error = str(exc)
@@ -1704,6 +1788,8 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
             break
 
     err = last_error or "Post failed"
+    if is_closed_period_error(err) and not closed_period_path:
+        raise ValueError(f"CLOSED_PERIOD:{requested_date}")
     await run_db(
         lambda: sb.table("transactions")
         .update(

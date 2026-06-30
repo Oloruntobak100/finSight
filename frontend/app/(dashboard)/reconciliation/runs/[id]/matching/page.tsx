@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { PageLoader } from "@/components/ui/page-loader";
+import { TransactionDateStack } from "@/components/books/transaction-date-stack";
 import { ApiError } from "@/lib/api";
 import {
   getReconciliationRun,
@@ -21,6 +22,129 @@ import { ReconciliationRunNav } from "../run-nav";
 
 const selectClass =
   "rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white";
+
+function itemPayee(item: ReconciliationItem): string {
+  return item.payee || item.narration || "—";
+}
+
+function isPairedItem(item: ReconciliationItem): boolean {
+  return (
+    item.source === "BOTH" ||
+    item.match_status === "SUGGESTED" ||
+    item.match_status === "AMOUNT_MATCH_SUGGESTED" ||
+    Boolean(item.mono_transaction_date && item.qbo_transaction_date)
+  );
+}
+
+function MatchPairedCard({
+  item,
+  run,
+  onConfirm,
+  onReject,
+  onClassify,
+}: {
+  item: ReconciliationItem;
+  run: ReconciliationRun | null;
+  onConfirm: () => void;
+  onReject: () => void;
+  onClassify: (status: string) => void;
+}) {
+  const monoDate = item.mono_transaction_date ?? item.transaction_date ?? "";
+  const qboDate = item.qbo_transaction_date ?? item.transaction_date ?? "";
+  const statusLabel = MATCH_STATUS_LABELS[item.match_status] ?? item.match_status;
+  const needsConfirm =
+    item.match_status === "SUGGESTED" || item.match_status === "AMOUNT_MATCH_SUGGESTED";
+  const locked = run?.status === "LOCKED";
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          {statusLabel}
+          {item.match_score ? (
+            <span className="ml-1 normal-case text-slate-600">
+              ({(item.match_score * 100).toFixed(0)}%)
+            </span>
+          ) : null}
+        </span>
+        {item.match_status === "MATCHED_EXACT" || item.match_status === "MATCHED_FUZZY" ? (
+          <span className="text-xs text-emerald-400">✓ Matched</span>
+        ) : null}
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 p-3">
+          <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">Bank (Mono)</p>
+          <TransactionDateStack transactionDate={monoDate} unposted={!item.posted_date} />
+          <p className="mt-2 text-lg font-semibold tabular-nums text-white">
+            {formatCurrency(item.amount, item.currency)}
+          </p>
+          <p className="mt-1 truncate text-sm text-slate-300" title={itemPayee(item)}>
+            {itemPayee(item)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 p-3">
+          <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">Books (QBO)</p>
+          <TransactionDateStack
+            transactionDate={qboDate}
+            postedDate={item.posted_date}
+            postingLagDays={item.posting_lag_days}
+          />
+          <p className="mt-2 text-lg font-semibold tabular-nums text-white">
+            {formatCurrency(item.amount, item.currency)}
+          </p>
+          <p className="mt-1 truncate text-sm text-slate-300" title={item.reference ?? undefined}>
+            {item.reference || itemPayee(item)}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {needsConfirm && !locked && (
+          <>
+            <Button size="sm" onClick={onConfirm}>
+              Confirm match
+            </Button>
+            <Button size="sm" variant="outline" onClick={onReject}>
+              Reject
+            </Button>
+          </>
+        )}
+        {item.source === "MONO" && !needsConfirm && (
+          <select
+            className={selectClass}
+            value={item.match_status}
+            onChange={(e) => onClassify(e.target.value)}
+            disabled={locked}
+          >
+            {MONO_CLASSIFY_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                {MATCH_STATUS_LABELS[o]}
+              </option>
+            ))}
+          </select>
+        )}
+        {item.source === "QBO" && !needsConfirm && (
+          <select
+            className={selectClass}
+            value={item.match_status}
+            onChange={(e) => onClassify(e.target.value)}
+            disabled={locked}
+          >
+            {QBO_CLASSIFY_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                {MATCH_STATUS_LABELS[o]}
+              </option>
+            ))}
+          </select>
+        )}
+        {item.source === "MONO" && ["UNRECORDED_BANK_CHARGE", "UNEXPLAINED"].includes(item.match_status) && (
+          <Link href="/books?status=pending" className="text-xs text-blue-400 underline">
+            Books
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function MatchingWorkspacePage() {
   const params = useParams();
@@ -78,6 +202,9 @@ export default function MatchingWorkspacePage() {
 
   if (loading && !run) return <PageLoader message="Loading transaction matching…" />;
 
+  const pairedItems = items.filter(isPairedItem);
+  const soloItems = items.filter((i) => !isPairedItem(i));
+
   return (
     <div className="page-enter space-y-4">
       <ReconciliationRunNav runId={runId} status={run?.status} />
@@ -113,83 +240,107 @@ export default function MatchingWorkspacePage() {
         ))}
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-800">
-        <table className="table-fit w-full text-sm">
-          <thead>
-            <tr className="border-b border-slate-800 text-left text-slate-500">
-              <th className="p-3">Date</th>
-              <th className="p-3">Payee</th>
-              <th className="p-3">Source</th>
-              <th className="p-3">Status</th>
-              <th className="p-3 text-right">Amount</th>
-              <th className="p-3">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id} className="border-b border-slate-800/50">
-                <td className="p-3">{item.transaction_date ?? "—"}</td>
-                <td className="p-3 max-w-[12rem] truncate" title={item.payee ?? item.narration}>
-                  {item.payee || item.narration || "—"}
-                </td>
-                <td className="p-3 text-slate-400">{item.source}</td>
-                <td className="p-3">
-                  <span className="text-xs">{MATCH_STATUS_LABELS[item.match_status] ?? item.match_status}</span>
-                  {item.match_score ? (
-                    <span className="ml-1 text-xs text-slate-500">({(item.match_score * 100).toFixed(0)}%)</span>
-                  ) : null}
-                </td>
-                <td className="p-3 text-right">{formatCurrency(item.amount, item.currency)}</td>
-                <td className="p-3">
-                  {item.match_status === "SUGGESTED" && (
-                    <div className="flex gap-1">
-                      <Button size="sm" variant="outline" onClick={() => void confirmSuggested(item, true)}>
-                        Confirm
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => void confirmSuggested(item, false)}>
-                        Reject
-                      </Button>
-                    </div>
-                  )}
-                  {item.source === "MONO" && item.match_status !== "SUGGESTED" && (
-                    <select
-                      className={selectClass}
-                      value={item.match_status}
-                      onChange={(e) => void classify(item, e.target.value)}
-                      disabled={run?.status === "LOCKED"}
-                    >
-                      {MONO_CLASSIFY_OPTIONS.map((o) => (
-                        <option key={o} value={o}>
-                          {MATCH_STATUS_LABELS[o]}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {item.source === "QBO" && item.match_status !== "SUGGESTED" && (
-                    <select
-                      className={selectClass}
-                      value={item.match_status}
-                      onChange={(e) => void classify(item, e.target.value)}
-                      disabled={run?.status === "LOCKED"}
-                    >
-                      {QBO_CLASSIFY_OPTIONS.map((o) => (
-                        <option key={o} value={o}>
-                          {MATCH_STATUS_LABELS[o]}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {item.source === "MONO" && ["UNRECORDED_BANK_CHARGE", "UNEXPLAINED"].includes(item.match_status) && (
-                    <Link href="/books?status=pending" className="ml-2 text-xs text-blue-400 underline">
-                      Books
-                    </Link>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="space-y-3">
+        {pairedItems.map((item) => (
+          <MatchPairedCard
+            key={item.id}
+            item={item}
+            run={run}
+            onConfirm={() => void confirmSuggested(item, true)}
+            onReject={() => void confirmSuggested(item, false)}
+            onClassify={(status) => void classify(item, status)}
+          />
+        ))}
       </div>
+
+      {soloItems.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-slate-800">
+          <table className="table-fit w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-left text-slate-500">
+                <th className="p-3">Date</th>
+                <th className="p-3">Payee</th>
+                <th className="p-3">Source</th>
+                <th className="p-3">Status</th>
+                <th className="p-3 text-right">Amount</th>
+                <th className="p-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {soloItems.map((item) => (
+                <tr key={item.id} className="border-b border-slate-800/50">
+                  <td className="p-3">
+                    <TransactionDateStack
+                      transactionDate={item.transaction_date ?? ""}
+                      postedDate={item.posted_date}
+                      postingLagDays={item.posting_lag_days}
+                      unposted={item.source === "MONO" && !item.posted_date}
+                    />
+                  </td>
+                  <td className="p-3 max-w-[12rem] truncate" title={itemPayee(item)}>
+                    {itemPayee(item)}
+                  </td>
+                  <td className="p-3 text-slate-400">{item.source}</td>
+                  <td className="p-3">
+                    <span className="text-xs">{MATCH_STATUS_LABELS[item.match_status] ?? item.match_status}</span>
+                  </td>
+                  <td className="p-3 text-right">{formatCurrency(item.amount, item.currency)}</td>
+                  <td className="p-3">
+                    {item.match_status === "SUGGESTED" && (
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="outline" onClick={() => void confirmSuggested(item, true)}>
+                          Confirm
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => void confirmSuggested(item, false)}>
+                          Reject
+                        </Button>
+                      </div>
+                    )}
+                    {item.source === "MONO" && item.match_status !== "SUGGESTED" && (
+                      <select
+                        className={selectClass}
+                        value={item.match_status}
+                        onChange={(e) => void classify(item, e.target.value)}
+                        disabled={run?.status === "LOCKED"}
+                      >
+                        {MONO_CLASSIFY_OPTIONS.map((o) => (
+                          <option key={o} value={o}>
+                            {MATCH_STATUS_LABELS[o]}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {item.source === "QBO" && item.match_status !== "SUGGESTED" && (
+                      <select
+                        className={selectClass}
+                        value={item.match_status}
+                        onChange={(e) => void classify(item, e.target.value)}
+                        disabled={run?.status === "LOCKED"}
+                      >
+                        {QBO_CLASSIFY_OPTIONS.map((o) => (
+                          <option key={o} value={o}>
+                            {MATCH_STATUS_LABELS[o]}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {item.source === "MONO" &&
+                      ["UNRECORDED_BANK_CHARGE", "UNEXPLAINED"].includes(item.match_status) && (
+                        <Link href="/books?status=pending" className="ml-2 text-xs text-blue-400 underline">
+                          Books
+                        </Link>
+                      )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {items.length === 0 && !loading && (
+        <p className="text-sm text-slate-500">No items in this filter.</p>
+      )}
 
       <div className="flex justify-end">
         <Link href={`/reconciliation/runs/${runId}/balance-proof`}>
