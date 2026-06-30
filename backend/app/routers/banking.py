@@ -19,6 +19,7 @@ from app.services.bank_providers import (
     should_skip_sync,
     sync_bank_account,
 )
+from app.services.bank_account_lifecycle import fetch_bank_account, restore_bank_account_continuity
 from app.services.transaction_enrichment import reprocess_stored_transactions
 
 router = APIRouter(prefix="/banking", tags=["banking"])
@@ -107,6 +108,26 @@ async def sync_accounts(
         "errors": errors,
         "status": "partial" if errors else "ok",
     }
+
+
+@router.post("/accounts/{account_id}/restore-continuity")
+async def restore_account_continuity(user_id: CurrentUser, account_id: str) -> dict:
+    """Restore archived transactions after reconnect (legacy disconnect or hard-delete)."""
+    account = await fetch_bank_account(user_id, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    provider = account.get("provider") or ""
+    if provider not in ("mono", "plaid"):
+        raise HTTPException(status_code=400, detail="Only bank accounts can be restored")
+    if account.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Account must be active to restore data")
+    result = await restore_bank_account_continuity(
+        user_id,
+        account_id,
+        provider,
+        account.get("external_account_id"),
+    )
+    return {"status": "ok", "account_id": account_id, **result}
 
 
 @router.get("/dev-info")

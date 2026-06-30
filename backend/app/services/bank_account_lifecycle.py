@@ -140,8 +140,10 @@ async def unarchive_transactions_for_account(user_id: str, account_id: str) -> i
     return total
 
 
-async def unarchive_orphaned_bank_transactions(user_id: str, provider: str) -> int:
-    """Unarchive bank rows detached by legacy hard-delete (account_id IS NULL)."""
+async def unarchive_orphaned_bank_transactions(
+    user_id: str, account_id: str, provider: str
+) -> int:
+    """Relink and unarchive bank rows detached by legacy hard-delete (account_id IS NULL)."""
     sb = get_supabase()
     total = 0
     while True:
@@ -158,8 +160,85 @@ async def unarchive_orphaned_bank_transactions(user_id: str, provider: str) -> i
         ids = [row["id"] for row in (res.data or []) if row.get("id")]
         if not ids:
             break
-        total += await _clear_archived_at(user_id, ids)
+        await run_db(
+            lambda: sb.table("transactions")
+            .update({"account_id": account_id, "archived_at": None})
+            .eq("user_id", user_id)
+            .in_("id", ids)
+            .execute()
+        )
+        total += len(ids)
         if len(ids) < UNARCHIVE_BATCH:
+            break
+    return total
+
+
+async def relink_legacy_archived_transactions(
+    user_id: str,
+    account_id: str,
+    provider: str,
+) -> int:
+    """Relink archived bank txs from deleted/disconnected account rows to the current one."""
+    sb = get_supabase()
+    conn_res = await run_db(
+        lambda: sb.table("connected_accounts")
+        .select("id, status")
+        .eq("user_id", user_id)
+        .eq("provider", provider)
+        .execute()
+    )
+    connected_rows = conn_res.data or []
+    active_same_provider = [
+        r for r in connected_rows if r.get("status") == "active"
+    ]
+    if len(active_same_provider) != 1 or active_same_provider[0]["id"] != account_id:
+        return 0
+
+    all_connected_ids = {r["id"] for r in connected_rows}
+    total = 0
+    while True:
+        res = await run_db(
+            lambda: sb.table("transactions")
+            .select("id, account_id")
+            .eq("user_id", user_id)
+            .eq("source_provider", provider)
+            .not_.is_("archived_at", "null")
+            .limit(UNARCHIVE_BATCH)
+            .execute()
+        )
+        batch = res.data or []
+        if not batch:
+            break
+        relink_ids: list[str] = []
+        for row in batch:
+            tid = row.get("id")
+            old_account_id = row.get("account_id")
+            if not tid:
+                continue
+            if old_account_id == account_id:
+                relink_ids.append(tid)
+            elif old_account_id is None:
+                relink_ids.append(tid)
+            elif old_account_id not in all_connected_ids:
+                relink_ids.append(tid)
+            else:
+                old_row = next(
+                    (r for r in connected_rows if r["id"] == old_account_id),
+                    None,
+                )
+                if old_row and old_row.get("status") == "disconnected":
+                    relink_ids.append(tid)
+        if not relink_ids:
+            break
+        await run_db(
+            lambda: sb.table("transactions")
+            .update({"account_id": account_id, "archived_at": None})
+            .eq("user_id", user_id)
+            .in_("id", relink_ids)
+            .execute()
+        )
+        total += len(relink_ids)
+        if len(batch) < UNARCHIVE_BATCH:
             break
     return total
 
@@ -294,7 +373,11 @@ async def connect_or_reactivate_bank_account(
     if extra_fields:
         row.update(extra_fields)
     result = await run_db(lambda: sb.table("connected_accounts").insert(row).execute())
-    return result.data[0], False
+    account = result.data[0]
+    await restore_bank_account_continuity(
+        user_id, account["id"], provider, external_account_id
+    )
+    return account, False
 
 
 async def restore_bank_account_continuity(
@@ -304,11 +387,13 @@ async def restore_bank_account_continuity(
     external_account_id: str | None,
 ) -> dict[str, int]:
     unarchived = await unarchive_transactions_for_account(user_id, account_id)
-    orphaned = await unarchive_orphaned_bank_transactions(user_id, provider)
+    orphaned = await unarchive_orphaned_bank_transactions(user_id, account_id, provider)
+    legacy = await relink_legacy_archived_transactions(user_id, account_id, provider)
     await migrate_bank_mapping_alias(user_id, account_id, external_account_id)
     relinked = await relink_open_reconciliation(user_id, account_id, provider)
     return {
         "unarchived": unarchived,
         "orphaned_unarchived": orphaned,
+        "legacy_relinked": legacy,
         "reconciliation_runs_relinked": relinked,
     }

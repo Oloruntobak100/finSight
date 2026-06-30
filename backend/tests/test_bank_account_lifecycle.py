@@ -65,3 +65,27 @@ async def test_connect_or_reactivate_reuses_existing_row():
     assert reconnected is True
     assert account["id"] == "acct-1"
     restore.assert_awaited_once_with("user-1", "acct-1", "mono", "mono-1")
+
+
+@pytest.mark.asyncio
+async def test_relink_legacy_archived_transactions_single_active_account():
+    with patch("app.services.bank_account_lifecycle.get_supabase"), patch(
+        "app.services.bank_account_lifecycle.run_db",
+        new=AsyncMock(
+            side_effect=[
+                MagicMock(data=[{"id": "new-acct", "status": "active"}]),
+                MagicMock(
+                    data=[
+                        {"id": "t1", "account_id": "old-deleted"},
+                        {"id": "t2", "account_id": None},
+                    ]
+                ),
+                None,
+            ]
+        ),
+    ):
+        from app.services.bank_account_lifecycle import relink_legacy_archived_transactions
+
+        count = await relink_legacy_archived_transactions("user-1", "new-acct", "mono")
+
+    assert count == 2

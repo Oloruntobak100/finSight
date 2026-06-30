@@ -45,6 +45,7 @@ function AccountsPageContent() {
   const [connectingPlaid, setConnectingPlaid] = useState(false);
   const [loading, setLoading] = useState(false);
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [isSandbox, setIsSandbox] = useState(false);
@@ -344,6 +345,35 @@ function AccountsPageContent() {
     loadAccounts();
   }
 
+  async function restoreBankData(accountId: string) {
+    setError(null);
+    setSyncMessage(null);
+    setRestoringId(accountId);
+    try {
+      const result = await apiFetch<{
+        unarchived: number;
+        orphaned_unarchived: number;
+        legacy_relinked: number;
+      }>(`/banking/accounts/${encodeURIComponent(accountId)}/restore-continuity`, {
+        method: "POST",
+      });
+      const total =
+        (result.unarchived ?? 0) +
+        (result.orphaned_unarchived ?? 0) +
+        (result.legacy_relinked ?? 0);
+      setSyncMessage(
+        total > 0
+          ? `Restored ${total} transaction(s) from your previous connection.`
+          : "No archived transactions found to restore — your data may already be active."
+      );
+      await loadAccounts();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to restore bank data.");
+    } finally {
+      setRestoringId(null);
+    }
+  }
+
   async function disconnect(provider: string, accountId: string) {
     setError(null);
     setDisconnectingId(accountId);
@@ -510,6 +540,17 @@ function AccountsPageContent() {
                         <FlaskConical className="h-3.5 w-3.5" />
                         Data feed
                       </Link>
+                    </Button>
+                  )}
+                  {(acc.provider === "mono" || acc.provider === "plaid") && acc.status === "active" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      loading={restoringId === acc.id}
+                      loadingLabel="Restoring…"
+                      onClick={() => restoreBankData(acc.id)}
+                    >
+                      Restore data
                     </Button>
                   )}
                   <Button
