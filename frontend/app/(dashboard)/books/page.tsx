@@ -2,11 +2,12 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, BookOpen, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { DateInput } from "@/components/ui/date-input";
 import { PageLoader } from "@/components/ui/page-loader";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -48,6 +49,20 @@ const STATUS_TABS: { id: QbSyncStatus; label: string }[] = [
 
 function queueTabEditable(status: QbSyncStatus): boolean {
   return status === "pending" || status === "needs_review" || status === "failed";
+}
+
+function booksQueueHref(opts: {
+  status: QbSyncStatus;
+  page?: number;
+  dateFrom?: string;
+  dateTo?: string;
+}): string {
+  const params = new URLSearchParams();
+  params.set("status", opts.status);
+  if (opts.page && opts.page > 1) params.set("page", String(opts.page));
+  if (opts.dateFrom) params.set("date_from", opts.dateFrom);
+  if (opts.dateTo) params.set("date_to", opts.dateTo);
+  return `/books?${params}`;
 }
 
 function kindLabel(row: QueueItem) {
@@ -412,10 +427,30 @@ function QueueRowActionMenu({
 
 function BooksQueueContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const rawStatus = searchParams.get("status") as QbSyncStatus | null;
   const status: QbSyncStatus =
     rawStatus === "excluded" ? "needs_review" : rawStatus || "unclassified";
   const page = Number(searchParams.get("page") || "1");
+  const dateFrom = searchParams.get("date_from") || "";
+  const dateTo = searchParams.get("date_to") || "";
+  const dateFilterActive = Boolean(dateFrom || dateTo);
+
+  function updateQueueDateParam(key: "date_from" | "date_to", value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set(key, value);
+    else params.delete(key);
+    params.delete("page");
+    router.push(`/books?${params.toString()}`);
+  }
+
+  function clearQueueDateFilter() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("date_from");
+    params.delete("date_to");
+    params.delete("page");
+    router.push(`/books?${params.toString()}`);
+  }
 
   const [qbConnected, setQbConnected] = useState<boolean | null>(null);
   const [qbEnvironment, setQbEnvironment] = useState<string | null>(null);
@@ -457,9 +492,9 @@ function BooksQueueContent() {
     (status === "failed" ? 1 : 0);
 
   const refreshQueue = useCallback(
-    async (statusFilter: QbSyncStatus, pageNum: number) => {
+    async (statusFilter: QbSyncStatus, pageNum: number, from?: string, to?: string) => {
       const [queue, sum] = await Promise.all([
-        getBooksQueue(statusFilter, pageNum, 20),
+        getBooksQueue(statusFilter, pageNum, 20, from || undefined, to || undefined),
         getBooksSummary(),
       ]);
       setItems(queue.items);
@@ -492,14 +527,14 @@ function BooksQueueContent() {
         );
         if (result.classified === 0) break;
       }
-      await refreshQueue(status, page);
+      await refreshQueue(status, page, dateFrom, dateTo);
     } catch {
       /* non-blocking */
     } finally {
       setClassifying(false);
       setClassifyProgress(null);
     }
-  }, [status, page, refreshQueue]);
+  }, [status, page, dateFrom, dateTo, refreshQueue]);
 
   const syncBooksFromQuickBooks = useCallback(
     async (opts?: { parties?: boolean }) => {
@@ -536,14 +571,14 @@ function BooksQueueContent() {
     setInfo(null);
     try {
       await syncBooksFromQuickBooks();
-      await refreshQueue(status, page);
+      await refreshQueue(status, page, dateFrom, dateTo);
       setInfo("Synced accounts from QuickBooks");
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "QuickBooks sync failed");
     } finally {
       setSyncingQb(false);
     }
-  }, [syncBooksFromQuickBooks, refreshQueue, status, page]);
+  }, [syncBooksFromQuickBooks, refreshQueue, status, page, dateFrom, dateTo]);
 
   const refreshData = useCallback(
     async (opts?: { classify?: boolean }) => {
@@ -558,12 +593,12 @@ function BooksQueueContent() {
         setSummary(sum.counts);
         setCoverage(sum.coverage ?? null);
         if (sum.automation) setAutomation(sum.automation);
-        await refreshQueue(status, page);
+        await refreshQueue(status, page, dateFrom, dateTo);
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to refresh books queue");
       }
     },
-    [status, page, refreshQueue, runClassifyAll]
+    [status, page, dateFrom, dateTo, refreshQueue, runClassifyAll]
   );
 
   useEffect(() => {
@@ -591,7 +626,7 @@ function BooksQueueContent() {
         const [coa, auto, queue] = await Promise.all([
           listCoa(undefined, true),
           sum.automation ? Promise.resolve(null) : getAutomationSettings(),
-          getBooksQueue(status, page, 20),
+          getBooksQueue(status, page, 20, dateFrom || undefined, dateTo || undefined),
         ]);
         if (cancelled) return;
 
@@ -631,7 +666,7 @@ function BooksQueueContent() {
     async function loadQueue() {
       setQueueLoading(true);
       try {
-        await refreshQueue(status, page);
+        await refreshQueue(status, page, dateFrom, dateTo);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof ApiError ? e.message : "Failed to load queue");
@@ -645,7 +680,7 @@ function BooksQueueContent() {
     return () => {
       cancelled = true;
     };
-  }, [status, page, bootstrapped, qbConnected, refreshQueue]);
+  }, [status, page, dateFrom, dateTo, bootstrapped, qbConnected, refreshQueue]);
 
   useEffect(() => {
     if (!bootstrapped || !qbConnected) return;
@@ -1101,7 +1136,7 @@ function BooksQueueContent() {
           return (
             <Link
               key={tab.id}
-              href={`/books?status=${tab.id}`}
+              href={booksQueueHref({ status: tab.id, dateFrom, dateTo })}
               className={`rounded-md px-2.5 py-1 text-xs transition-colors md:text-sm ${
                 active
                   ? "bg-blue-600/20 text-blue-400 ring-1 ring-blue-500/30"
@@ -1113,6 +1148,38 @@ function BooksQueueContent() {
             </Link>
           );
         })}
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-3">
+        <div>
+          <label className="mb-1.5 block text-xs text-slate-400">From date</label>
+          <DateInput
+            value={dateFrom}
+            onChange={(e) => updateQueueDateParam("date_from", e.target.value)}
+            className="w-[11rem]"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-xs text-slate-400">To date</label>
+          <DateInput
+            value={dateTo}
+            onChange={(e) => updateQueueDateParam("date_to", e.target.value)}
+            className="w-[11rem]"
+          />
+        </div>
+        {dateFilterActive && (
+          <Button type="button" variant="ghost" size="sm" className="text-slate-400" onClick={clearQueueDateFilter}>
+            Clear dates
+          </Button>
+        )}
+        {dateFilterActive && queueTotal >= 0 && (
+          <p className="pb-1 text-xs text-slate-500">
+            {queueTotal} in range
+            {(summary[status] ?? 0) > queueTotal ? (
+              <span className="text-slate-600"> · {(summary[status] ?? 0) - queueTotal} outside range</span>
+            ) : null}
+          </p>
+        )}
       </div>
 
       {classifying && (
@@ -1383,18 +1450,18 @@ function BooksQueueContent() {
       {totalPages > 1 && (
         <div className="flex justify-center gap-2">
           {page > 1 && (
-            <Link href={`/books?status=${status}&page=${page - 1}`}>
+            <Link href={booksQueueHref({ status, page: page - 1, dateFrom, dateTo })}>
               <Button variant="outline" size="sm">
                 Previous
               </Button>
             </Link>
           )}
           <span className="flex items-center px-3 text-sm text-slate-500">
-            Showing {(page - 1) * 20 + 1}–{Math.min(page * 20, queueTotal)} of {queueTotal} · Page {page} of{" "}
-            {totalPages}
+            Showing {(page - 1) * 20 + 1}–{Math.min(page * 20, queueTotal)} of {queueTotal}
+            {dateFilterActive ? " in range" : ""} · Page {page} of {totalPages}
           </span>
           {page < totalPages && (
-            <Link href={`/books?status=${status}&page=${page + 1}`}>
+            <Link href={booksQueueHref({ status, page: page + 1, dateFrom, dateTo })}>
               <Button variant="outline" size="sm">
                 Next
               </Button>

@@ -788,11 +788,27 @@ async def _count_books_queue_status(
     return res.count or 0
 
 
+def _apply_books_queue_date_filter(
+    query: Any,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> Any:
+    if date_from:
+        query = query.gte("transaction_date", date_from[:10])
+    if date_to:
+        query = query.lte("transaction_date", date_to[:10])
+    return query
+
+
 async def get_queue(
     user_id: str,
     status: str | None = None,
     page: int = 1,
     limit: int = 20,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict[str, Any]:
     sb = get_supabase()
     bank_accounts, active_bank_ids = await _active_bank_accounts(user_id)
@@ -807,6 +823,7 @@ async def get_queue(
     )
     query = _apply_books_account_filter(query, active_bank_ids)
     query = _apply_books_queue_status_filter(query, status)
+    query = _apply_books_queue_date_filter(query, date_from=date_from, date_to=date_to)
 
     offset = (page - 1) * limit
     res = await run_db(

@@ -215,10 +215,14 @@ export async function classifyTransactions(
 export async function getBooksQueue(
   status?: QbSyncStatus,
   page = 1,
-  limit = 20
+  limit = 20,
+  dateFrom?: string,
+  dateTo?: string
 ): Promise<QueueList> {
   const params = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (status) params.set("status", status);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
   return apiFetch(`/books/queue?${params}`);
 }
 

@@ -251,8 +251,12 @@ async def books_queue(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
 ) -> QueueListResponse:
-    data = await get_queue(user_id, status, page, limit)
+    data = await get_queue(
+        user_id, status, page, limit, date_from=date_from, date_to=date_to
+    )
     return QueueListResponse(
         items=[QueueItemResponse(**i) for i in data["items"]],
         total=data["total"],
