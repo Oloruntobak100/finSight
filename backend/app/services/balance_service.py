@@ -3,6 +3,7 @@ from typing import Any
 
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 
+from app.database import get_supabase, run_db
 from app.services.mono_money import normalize_mono_balance
 from app.models.analysis_filters import AnalysisFilters
 from app.services.plaid_service import _get_plaid_client, _plaid_to_dict

@@ -66,6 +66,7 @@ from app.services.qb_party_service import (
     sync_parties,
 )
 from app.services.opening_balance_service import get_opening_balance_preview, post_opening_balance
+from app.services.quickbooks_service import get_connection_status
 from app.database import get_supabase, run_db
 
 router = APIRouter(prefix="/books", tags=["books"])
