@@ -14,6 +14,7 @@ from app.services.bank_transaction_scope import (
     count_scoped_transactions,
     get_active_bank_accounts,
 )
+from app.services.bank_account_lifecycle import maybe_auto_restore_bank_data
 from app.services.transaction_enrichment import extract_transaction_details, reprocess_stored_transactions
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -52,6 +53,11 @@ async def transaction_meta(user_id: CurrentUser) -> dict:
             offset += 500
 
     total = await count_scoped_transactions(user_id, active_bank_ids) if active_bank_ids else 0
+    auto_restore = await maybe_auto_restore_bank_data(
+        user_id, bank_accounts, visible_count=total
+    )
+    if auto_restore and active_bank_ids:
+        total = await count_scoped_transactions(user_id, active_bank_ids)
     synthetic = 0
     if active_bank_ids:
         syn_res = await run_db(
@@ -118,6 +124,12 @@ async def list_transactions(
     sb = get_supabase()
     bank_accounts, active_bank_ids = await get_active_bank_accounts(user_id)
     bank_map = _bank_map(bank_accounts)
+
+    if active_bank_ids:
+        visible = await count_scoped_transactions(user_id, active_bank_ids)
+        await maybe_auto_restore_bank_data(user_id, bank_accounts, visible_count=visible)
+        bank_accounts, active_bank_ids = await get_active_bank_accounts(user_id)
+        bank_map = _bank_map(bank_accounts)
 
     if not active_bank_ids:
         return TransactionListResponse(

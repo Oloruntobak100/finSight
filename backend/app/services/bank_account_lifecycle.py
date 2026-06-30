@@ -173,6 +173,56 @@ async def unarchive_orphaned_bank_transactions(
     return total
 
 
+async def count_archived_bank_transactions(user_id: str, provider: str | None = None) -> int:
+    sb = get_supabase()
+    query = (
+        sb.table("transactions")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .in_("source_provider", list(BANK_PROVIDERS))
+        .not_.is_("archived_at", "null")
+    )
+    if provider:
+        query = query.eq("source_provider", provider)
+    res = await run_db(lambda: query.execute())
+    return res.count or 0
+
+
+async def maybe_auto_restore_bank_data(
+    user_id: str,
+    bank_accounts: list[dict[str, Any]],
+    *,
+    visible_count: int,
+) -> dict[str, int] | None:
+    """Restore archived bank rows when an active account shows zero visible transactions."""
+    if visible_count > 0 or not bank_accounts:
+        return None
+    totals: dict[str, int] = {
+        "unarchived": 0,
+        "orphaned_unarchived": 0,
+        "legacy_relinked": 0,
+        "reconciliation_runs_relinked": 0,
+    }
+    restored = False
+    for account in bank_accounts:
+        provider = account.get("provider")
+        if provider not in BANK_PROVIDERS or account.get("status") == "disconnected":
+            continue
+        archived = await count_archived_bank_transactions(user_id, provider)
+        if archived <= 0:
+            continue
+        result = await restore_bank_account_continuity(
+            user_id,
+            account["id"],
+            provider,
+            account.get("external_account_id"),
+        )
+        for key in totals:
+            totals[key] += int(result.get(key) or 0)
+        restored = True
+    return totals if restored else None
+
+
 async def relink_legacy_archived_transactions(
     user_id: str,
     account_id: str,
@@ -188,24 +238,30 @@ async def relink_legacy_archived_transactions(
         .execute()
     )
     connected_rows = conn_res.data or []
-    active_same_provider = [
-        r for r in connected_rows if r.get("status") == "active"
-    ]
-    if len(active_same_provider) != 1 or active_same_provider[0]["id"] != account_id:
-        return 0
-
     all_connected_ids = {r["id"] for r in connected_rows}
+    other_active_ids = {
+        r["id"]
+        for r in connected_rows
+        if r.get("status") == "active" and r["id"] != account_id
+    }
+
     total = 0
+    offset = 0
     while True:
-        res = await run_db(
-            lambda: sb.table("transactions")
-            .select("id, account_id")
-            .eq("user_id", user_id)
-            .eq("source_provider", provider)
-            .not_.is_("archived_at", "null")
-            .limit(UNARCHIVE_BATCH)
-            .execute()
-        )
+        page_offset = offset
+
+        def _page(off: int = page_offset) -> Any:
+            return (
+                sb.table("transactions")
+                .select("id, account_id")
+                .eq("user_id", user_id)
+                .eq("source_provider", provider)
+                .not_.is_("archived_at", "null")
+                .range(off, off + UNARCHIVE_BATCH - 1)
+                .execute()
+            )
+
+        res = await run_db(_page)
         batch = res.data or []
         if not batch:
             break
@@ -214,6 +270,8 @@ async def relink_legacy_archived_transactions(
             tid = row.get("id")
             old_account_id = row.get("account_id")
             if not tid:
+                continue
+            if old_account_id in other_active_ids:
                 continue
             if old_account_id == account_id:
                 relink_ids.append(tid)
@@ -228,16 +286,16 @@ async def relink_legacy_archived_transactions(
                 )
                 if old_row and old_row.get("status") == "disconnected":
                     relink_ids.append(tid)
-        if not relink_ids:
-            break
-        await run_db(
-            lambda: sb.table("transactions")
-            .update({"account_id": account_id, "archived_at": None})
-            .eq("user_id", user_id)
-            .in_("id", relink_ids)
-            .execute()
-        )
-        total += len(relink_ids)
+        if relink_ids:
+            await run_db(
+                lambda ids=relink_ids: sb.table("transactions")
+                .update({"account_id": account_id, "archived_at": None})
+                .eq("user_id", user_id)
+                .in_("id", ids)
+                .execute()
+            )
+            total += len(relink_ids)
+        offset += UNARCHIVE_BATCH
         if len(batch) < UNARCHIVE_BATCH:
             break
     return total

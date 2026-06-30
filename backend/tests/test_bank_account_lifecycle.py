@@ -68,7 +68,51 @@ async def test_connect_or_reactivate_reuses_existing_row():
 
 
 @pytest.mark.asyncio
-async def test_relink_legacy_archived_transactions_single_active_account():
+async def test_maybe_auto_restore_when_archived_exist():
+    account = {"id": "new-acct", "provider": "mono", "status": "active", "external_account_id": "mono-1"}
+    with patch(
+        "app.services.bank_account_lifecycle.count_archived_bank_transactions",
+        AsyncMock(return_value=42),
+    ), patch(
+        "app.services.bank_account_lifecycle.restore_bank_account_continuity",
+        AsyncMock(
+            return_value={
+                "unarchived": 10,
+                "orphaned_unarchived": 30,
+                "legacy_relinked": 2,
+                "reconciliation_runs_relinked": 0,
+            }
+        ),
+    ) as restore:
+        from app.services.bank_account_lifecycle import maybe_auto_restore_bank_data
+
+        result = await maybe_auto_restore_bank_data("user-1", [account], visible_count=0)
+
+    assert result is not None
+    assert result["legacy_relinked"] == 2
+    restore.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_maybe_auto_restore_skips_when_visible_rows_exist():
+    with patch(
+        "app.services.bank_account_lifecycle.restore_bank_account_continuity",
+        AsyncMock(),
+    ) as restore:
+        from app.services.bank_account_lifecycle import maybe_auto_restore_bank_data
+
+        result = await maybe_auto_restore_bank_data(
+            "user-1",
+            [{"id": "acct", "provider": "mono", "status": "active"}],
+            visible_count=5,
+        )
+
+    assert result is None
+    restore.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_relink_legacy_archived_transactions():
     with patch("app.services.bank_account_lifecycle.get_supabase"), patch(
         "app.services.bank_account_lifecycle.run_db",
         new=AsyncMock(

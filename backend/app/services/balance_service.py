@@ -4,6 +4,8 @@ from typing import Any
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 
 from app.database import get_supabase, run_db
+from app.services.bank_account_lifecycle import maybe_auto_restore_bank_data
+from app.services.bank_transaction_scope import count_scoped_transactions, get_active_bank_accounts
 from app.services.mono_money import normalize_mono_balance
 from app.models.analysis_filters import AnalysisFilters
 from app.services.plaid_service import _get_plaid_client, _plaid_to_dict
@@ -16,6 +18,7 @@ async def _mono_balance_from_transactions(sb: Any, user_id: str, account_id: str
         .select("raw_metadata, currency, transaction_date, created_at")
         .eq("user_id", user_id)
         .eq("account_id", account_id)
+        .is_("archived_at", "null")
         .order("transaction_date", desc=True)
         .order("created_at", desc=True)
         .limit(1)
@@ -34,6 +37,11 @@ async def get_user_balances(
     user_id: str,
     filters: AnalysisFilters | None = None,
 ) -> dict[str, Any]:
+    bank_accounts, active_bank_ids = await get_active_bank_accounts(user_id)
+    if active_bank_ids:
+        visible = await count_scoped_transactions(user_id, active_bank_ids)
+        await maybe_auto_restore_bank_data(user_id, bank_accounts, visible_count=visible)
+
     sb = get_supabase()
     accounts_res = await run_db(
         lambda: sb.table("connected_accounts")
