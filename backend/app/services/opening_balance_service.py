@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.database import get_supabase, run_db
-from app.services.books_service import _mapping_lookup, get_mappings, list_coa
+from app.services.bank_account_lifecycle import bank_mapping_lookup, fetch_bank_account
+from app.services.books_service import get_mappings, list_coa
 from app.services.mono_money import normalize_mono_balance
 from app.services.quickbooks_service import qb_company_post_json, qb_query
 
@@ -55,7 +56,12 @@ async def _mono_suggested_balance(user_id: str, account_id: str) -> tuple[float,
 
 async def get_opening_balance_preview(user_id: str, account_id: str) -> dict[str, Any]:
     mappings = await get_mappings(user_id)
-    bank_map = _mapping_lookup(mappings, "bank_account", account_id)
+    account = await fetch_bank_account(user_id, account_id)
+    bank_map = bank_mapping_lookup(
+        mappings,
+        account_id,
+        account.get("external_account_id") if account else None,
+    )
     qb_bank_id = bank_map.get("qb_account_id") if bank_map else None
 
     mono_bal, currency, mono_source = await _mono_suggested_balance(user_id, account_id)
@@ -97,7 +103,12 @@ async def post_opening_balance(
         raise ValueError("Opening balance amount must be positive")
 
     mappings = await get_mappings(user_id)
-    bank_map = _mapping_lookup(mappings, "bank_account", account_id)
+    account = await fetch_bank_account(user_id, account_id)
+    bank_map = bank_mapping_lookup(
+        mappings,
+        account_id,
+        account.get("external_account_id") if account else None,
+    )
     bank_id = qb_bank_account_id or (bank_map.get("qb_account_id") if bank_map else None)
     if not bank_id:
         raise ValueError("Map this bank to a QuickBooks bank account first")

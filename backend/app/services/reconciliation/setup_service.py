@@ -6,8 +6,9 @@ from calendar import monthrange
 from datetime import date
 from typing import Any
 
+from app.services.bank_account_lifecycle import bank_mapping_lookup, fetch_bank_account
 from app.services.bank_transaction_scope import get_active_bank_accounts
-from app.services.books_service import _mapping_lookup, get_mappings, list_coa
+from app.services.books_service import get_mappings, list_coa
 from app.services.reconciliation.mono_bank_activity import mono_closing_balance
 from app.services.reconciliation.qbo_bank_activity import qbo_bank_account_balance_as_of
 
@@ -30,7 +31,9 @@ async def get_setup(user_id: str) -> dict[str, Any]:
 
     banks: list[dict[str, Any]] = []
     for account in bank_accounts:
-        bank_map = _mapping_lookup(mappings, "bank_account", account["id"])
+        bank_map = bank_mapping_lookup(
+            mappings, account["id"], account.get("external_account_id")
+        )
         banks.append(
             {
                 "id": account["id"],
@@ -62,7 +65,12 @@ async def preview_balances(
 ) -> dict[str, Any]:
     mono_bal, currency, source = await mono_closing_balance(user_id, mono_account_id, period_end)
     mappings = await get_mappings(user_id)
-    bank_map = _mapping_lookup(mappings, "bank_account", mono_account_id)
+    account = await fetch_bank_account(user_id, mono_account_id)
+    bank_map = bank_mapping_lookup(
+        mappings,
+        mono_account_id,
+        account.get("external_account_id") if account else None,
+    )
     opening_amount = None
     opening_as_of = None
     if bank_map:

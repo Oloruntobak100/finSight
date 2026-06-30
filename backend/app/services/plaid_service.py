@@ -23,7 +23,8 @@ from plaid.model.webhook_type import WebhookType
 
 from app.config import settings
 from app.database import get_supabase, run_db
-from app.services.bank_transaction_scope import archive_detached_bank_transactions, archive_transactions_for_account
+from app.services.bank_account_lifecycle import connect_or_reactivate_bank_account, soft_disconnect_bank_account
+from app.services.bank_transaction_scope import archive_transactions_for_account
 from app.services.token_service import decrypt_token, encrypt_token
 from app.services.transaction_enrichment import build_plaid_transaction_row, load_user_category_rules
 
@@ -101,6 +102,7 @@ async def _upsert_plaid_transaction(
         raw_metadata=raw,
         user_rules=user_rules,
     )
+    row["archived_at"] = None
     await run_db(
         lambda r=row: sb.table("transactions")
         .upsert(r, on_conflict="source_provider,external_id,user_id")
@@ -185,18 +187,14 @@ async def exchange_public_token(
     item_id = exchange["item_id"]
     display_name = await _resolve_account_name(access_token, account_name)
 
-    sb = get_supabase()
-    row = {
-        "user_id": user_id,
-        "provider": "plaid",
-        "account_name": display_name,
-        "account_type": "bank",
-        "access_token_encrypted": encrypt_token(access_token),
-        "external_account_id": item_id,
-        "status": "active",
-    }
-    result = await run_db(lambda: sb.table("connected_accounts").insert(row).execute())
-    return result.data[0]
+    account, _reconnected = await connect_or_reactivate_bank_account(
+        user_id,
+        "plaid",
+        item_id,
+        account_name=display_name,
+        access_token_encrypted=encrypt_token(access_token),
+    )
+    return account
 
 
 async def sync_plaid_transactions(user_id: str, account_id: str) -> int:
@@ -660,11 +658,4 @@ async def disconnect_plaid_account(user_id: str, account_id: str) -> None:
         pass
 
     await archive_transactions_for_account(user_id, account_id)
-
-    await run_db(lambda: sb.table("connected_accounts").delete().eq("id", account_id).execute())
-    await archive_detached_bank_transactions(user_id)
-    await run_db(
-        lambda: sb.table("oauth_audit_log")
-        .insert({"user_id": user_id, "provider": "plaid", "event": "revoked", "metadata": {"account_id": account_id}})
-        .execute()
-    )
+    await soft_disconnect_bank_account(user_id, account_id, "plaid")

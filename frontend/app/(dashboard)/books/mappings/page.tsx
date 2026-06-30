@@ -26,6 +26,7 @@ interface BankAccount {
   id: string;
   account_name: string;
   provider: string;
+  external_account_id?: string | null;
 }
 
 const selectClass =
@@ -267,9 +268,20 @@ export default function BooksMappingsPage() {
     }
   }
 
-  function bankMappingFor(accountId: string): string {
-    return mappings.find((m) => m.mapping_type === "bank_account" && m.finsight_key === accountId)
-      ?.qb_account_id ?? "";
+  function bankMappingKey(bank: BankAccount): string {
+    return bank.external_account_id || bank.id;
+  }
+
+  function bankMappingFor(bank: BankAccount): string {
+    const stableKey = bankMappingKey(bank);
+    const byStable = mappings.find(
+      (m) => m.mapping_type === "bank_account" && m.finsight_key === stableKey,
+    );
+    if (byStable?.qb_account_id) return byStable.qb_account_id;
+    return (
+      mappings.find((m) => m.mapping_type === "bank_account" && m.finsight_key === bank.id)
+        ?.qb_account_id ?? ""
+    );
   }
 
   function categoryMappingFor(category: string): string {
@@ -335,8 +347,10 @@ export default function BooksMappingsPage() {
                   </div>
                   <select
                     className={selectClass}
-                    value={bankMappingFor(bank.id)}
-                    onChange={(e) => saveBankMapping(bank.id, e.target.value)}
+                    value={bankMappingFor(bank)}
+                    onChange={(e) =>
+                      saveBankMapping(bankMappingKey(bank), e.target.value)
+                    }
                   >
                     <option value="">Select QB bank account…</option>
                     {bankCoa.map((a) => (
@@ -346,10 +360,10 @@ export default function BooksMappingsPage() {
                     ))}
                   </select>
                 </div>
-                {bankMappingFor(bank.id) ? (
+                {bankMappingFor(bank) ? (
                   <OpeningBalancePanel
                     accountId={bank.id}
-                    qbAccountId={bankMappingFor(bank.id)}
+                    qbAccountId={bankMappingFor(bank)}
                     onPosted={() => setMessage("Opening balance posted to QuickBooks")}
                   />
                 ) : null}

@@ -125,12 +125,14 @@ async def list_connected_accounts(user_id: CurrentUser) -> dict:
     sb = get_supabase()
     res = await run_db(
         lambda: sb.table("connected_accounts")
-        .select("id, provider, account_name, account_type, last_synced_at, status, created_at")
+        .select("id, provider, account_name, account_type, last_synced_at, status, created_at, external_account_id")
         .eq("user_id", user_id)
         .execute()
     )
     accounts = []
     for row in res.data or []:
+        if row.get("status") == "disconnected":
+            continue
         item = dict(row)
         if item.get("provider") == "quickbooks":
             item["environment"] = settings.quickbooks_env

@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from app.database import get_supabase, run_db
+from app.services.bank_account_lifecycle import bank_mapping_lookup
 from app.services.bank_transaction_scope import get_active_bank_accounts
-from app.services.books_service import _mapping_lookup, get_mappings, list_coa
+from app.services.books_service import _bank_mapping_lookup, get_mappings, list_coa
 from app.services.quickbooks_service import qb_query
 
 BANK_PROVIDERS = ("plaid", "mono")
@@ -123,7 +124,7 @@ async def _resolve_qb_bank_account_id(
     if not bank_account_id:
         return None
     mappings = await get_mappings(user_id)
-    bank_map = _mapping_lookup(mappings, "bank_account", str(bank_account_id))
+    bank_map = _bank_mapping_lookup(mappings, str(bank_account_id)) if bank_account_id else None
     if bank_map and bank_map.get("qb_account_id"):
         return str(bank_map["qb_account_id"])
     return None
@@ -137,7 +138,9 @@ async def get_reconciliation_options(user_id: str) -> dict[str, Any]:
 
     banks: list[dict[str, Any]] = []
     for account in bank_accounts:
-        bank_map = _mapping_lookup(mappings, "bank_account", account["id"])
+        bank_map = bank_mapping_lookup(
+            mappings, account["id"], account.get("external_account_id")
+        )
         banks.append(
             {
                 "id": account["id"],

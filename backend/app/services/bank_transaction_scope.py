@@ -16,7 +16,7 @@ async def get_active_bank_accounts(user_id: str) -> tuple[list[dict[str, Any]], 
     sb = get_supabase()
     res = await run_db(
         lambda: sb.table("connected_accounts")
-        .select("id, provider, account_name, status, last_synced_at")
+        .select("id, provider, account_name, status, last_synced_at, external_account_id")
         .eq("user_id", user_id)
         .execute()
     )

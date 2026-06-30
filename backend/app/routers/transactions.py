@@ -77,6 +77,7 @@ async def transaction_meta(user_id: CurrentUser) -> dict:
                 "id": a["id"],
                 "account_name": a.get("account_name"),
                 "provider": a.get("provider"),
+                "external_account_id": a.get("external_account_id"),
             }
             for a in bank_accounts
         ],

@@ -143,22 +143,17 @@ async def test_get_summary_aggregates_exact_counts():
 
 
 @pytest.mark.asyncio
-async def test_disconnect_mono_archives_before_delete():
+async def test_disconnect_mono_archives_and_soft_disconnects():
     with patch(
         "app.services.mono_service.archive_transactions_for_account",
         AsyncMock(return_value=42),
     ) as archive_acct, patch(
-        "app.services.mono_service.archive_detached_bank_transactions",
-        AsyncMock(return_value=2),
-    ) as archive_detached, patch(
-        "app.services.mono_service.get_supabase",
-    ), patch(
-        "app.services.mono_service.run_db",
-        new=AsyncMock(),
-    ):
+        "app.services.mono_service.soft_disconnect_bank_account",
+        AsyncMock(),
+    ) as soft_disconnect:
         from app.services.mono_service import disconnect_mono_account
 
         await disconnect_mono_account("user-1", "acct-1")
 
     archive_acct.assert_awaited_once_with("user-1", "acct-1")
-    archive_detached.assert_awaited_once_with("user-1")
+    soft_disconnect.assert_awaited_once_with("user-1", "acct-1", "mono")

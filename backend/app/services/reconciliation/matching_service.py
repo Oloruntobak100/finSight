@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.database import get_supabase, run_db
-from app.services.books_service import _mapping_lookup, get_mappings
+from app.services.bank_account_lifecycle import bank_mapping_lookup, fetch_bank_account
+from app.services.books_service import get_mappings
 from app.services.qb_party_service import normalize_party_lookup
 from app.services.reconciliation.audit_service import log_audit
 from app.services.reconciliation.balance_proof_service import recalculate_balance_proof
@@ -117,7 +118,12 @@ async def _resolve_qb_bank(user_id: str, mono_account_id: str, qb_bank_account_i
     if qb_bank_account_id:
         return str(qb_bank_account_id)
     mappings = await get_mappings(user_id)
-    bank_map = _mapping_lookup(mappings, "bank_account", mono_account_id)
+    account = await fetch_bank_account(user_id, mono_account_id)
+    bank_map = bank_mapping_lookup(
+        mappings,
+        mono_account_id,
+        account.get("external_account_id") if account else None,
+    )
     if bank_map and bank_map.get("qb_account_id"):
         return str(bank_map["qb_account_id"])
     raise ValueError("QuickBooks bank account is required. Map this bank under Books → Mappings.")

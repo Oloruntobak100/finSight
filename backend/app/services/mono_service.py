@@ -12,7 +12,8 @@ import httpx
 
 from app.config import settings
 from app.database import get_supabase, run_db
-from app.services.bank_transaction_scope import archive_detached_bank_transactions, archive_transactions_for_account
+from app.services.bank_transaction_scope import archive_transactions_for_account
+from app.services.bank_account_lifecycle import connect_or_reactivate_bank_account, soft_disconnect_bank_account
 
 from app.services.token_service import encrypt_token
 
@@ -408,6 +409,7 @@ async def _upsert_mono_transactions(
         )
 
         row["discovered_date"] = datetime.now(timezone.utc).isoformat()
+        row["archived_at"] = None
 
         if not row["transaction_date"]:
 
@@ -445,31 +447,14 @@ async def connect_mono_account(user_id: str, code: str, account_name: str) -> di
 
     resolved_name = _account_display_name(details, account_name or "Mono Account")
 
-
-
-    sb = get_supabase()
-
-    row = {
-
-        "user_id": user_id,
-
-        "provider": "mono",
-
-        "account_name": resolved_name,
-
-        "account_type": "bank",
-
-        "access_token_encrypted": encrypt_token(mono_account_id),
-
-        "external_account_id": mono_account_id,
-
-        "status": "active",
-
-    }
-
-    result = await run_db(lambda: sb.table("connected_accounts").insert(row).execute())
-
-    return result.data[0]
+    account, _reconnected = await connect_or_reactivate_bank_account(
+        user_id,
+        "mono",
+        mono_account_id,
+        account_name=resolved_name,
+        access_token_encrypted=encrypt_token(mono_account_id),
+    )
+    return account
 
 
 
@@ -531,37 +516,5 @@ async def sync_mono_transactions(
 
 
 async def disconnect_mono_account(user_id: str, account_id: str) -> None:
-
-    sb = get_supabase()
-
     await archive_transactions_for_account(user_id, account_id)
-
-    await run_db(
-
-        lambda: sb.table("connected_accounts")
-
-        .delete()
-
-        .eq("id", account_id)
-
-        .eq("user_id", user_id)
-
-        .eq("provider", "mono")
-
-        .execute()
-
-    )
-
-    await archive_detached_bank_transactions(user_id)
-
-    await run_db(
-
-        lambda: sb.table("oauth_audit_log")
-
-        .insert({"user_id": user_id, "provider": "mono", "event": "revoked", "metadata": {"account_id": account_id}})
-
-        .execute()
-
-    )
-
-
+    await soft_disconnect_bank_account(user_id, account_id, "mono")

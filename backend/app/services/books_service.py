@@ -55,6 +55,7 @@ from app.services.bank_transaction_scope import (
     get_active_bank_accounts,
     iter_scoped_transactions,
 )
+from app.services.bank_account_lifecycle import bank_mapping_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,17 @@ def _mapping_lookup(mappings: list[dict[str, Any]], mapping_type: str, key: str)
     return None
 
 
+def _bank_mapping_lookup(
+    mappings: list[dict[str, Any]],
+    account_id: str | None,
+    *,
+    external_account_id: str | None = None,
+) -> dict[str, Any] | None:
+    if not account_id:
+        return None
+    return bank_mapping_lookup(mappings, str(account_id), external_account_id)
+
+
 def _accounts_for_kind(coa: list[dict[str, Any]], kind: PostingKind) -> list[dict[str, Any]]:
     def _type(row: dict[str, Any]) -> str:
         return (row.get("account_type") or "").strip().lower()
@@ -415,7 +427,7 @@ def classify_transaction(
     kind = detect_posting_kind(txn, learned_kind=learned_kind)
     posting_type = posting_type_for_kind(kind)
 
-    bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
+    bank_map = _bank_mapping_lookup(mappings, str(account_id) if account_id else None) if account_id else None
     payment_account_id = bank_map.get("qb_account_id") if bank_map else None
 
     target_accounts = _accounts_for_kind(coa, kind)
@@ -913,6 +925,7 @@ async def get_books_readiness(user_id: str) -> dict[str, Any]:
                 "account_name": a.get("account_name"),
                 "provider": a.get("provider"),
                 "last_synced_at": a.get("last_synced_at"),
+                "external_account_id": a.get("external_account_id"),
             }
             for a in bank_accounts
         ],
@@ -1227,7 +1240,7 @@ async def approve_transaction(
     if not payment_account_id:
         account_id = txn.get("account_id")
         mappings = await get_mappings(user_id)
-        bank_map = _mapping_lookup(mappings, "bank_account", str(account_id)) if account_id else None
+        bank_map = _bank_mapping_lookup(mappings, str(account_id) if account_id else None) if account_id else None
         payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
 
     if approved_kind == "transfer":
@@ -1941,7 +1954,7 @@ def _fingerprint_prefill_patch(
         return None
 
     bank_id = txn.get("account_id")
-    bank_map = _mapping_lookup(mappings, "bank_account", str(bank_id)) if bank_id else None
+    bank_map = _bank_mapping_lookup(mappings, str(bank_id) if bank_id else None) if bank_id else None
     payment_account_id = bank_map.get("qb_account_id") if bank_map else txn.get("qb_payment_account_id")
 
     if propagation and account_id and payment_account_id:
