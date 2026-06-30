@@ -29,6 +29,14 @@ export interface SyntheticFeedAccount {
   last_synced_at: string | null;
   profile?: SyntheticFeedProfile | null;
   live_feed_enabled?: boolean;
+  next_live_run_at?: string | null;
+  last_live_run_at?: string | null;
+  last_live_drip?: {
+    status: string;
+    error?: string | null;
+    transactions_created?: number;
+    started_at?: string;
+  } | null;
 }
 
 export interface SyntheticFeedStatus {
@@ -98,10 +106,15 @@ export function fillHistory(accountId: string, start: string, end: string, count
 }
 
 export function startLiveFeed(accountId: string) {
-  return apiFetch<{ profile: SyntheticFeedProfile }>(
-    `/synthetic-feed/accounts/${accountId}/live-feed/start`,
-    { method: "POST", timeoutMs: DATA_FEED_TIMEOUT_MS }
-  );
+  return apiFetch<{
+    profile: SyntheticFeedProfile;
+    interval_hours?: number;
+    first_drip?: GenerateResult;
+    first_drip_error?: string;
+  }>(`/synthetic-feed/accounts/${accountId}/live-feed/start`, {
+    method: "POST",
+    timeoutMs: DATA_FEED_TIMEOUT_MS,
+  });
 }
 
 export function pauseLiveFeed(accountId: string) {
@@ -163,6 +176,16 @@ export const PERSONA_LABELS: Record<PersonaType, string> = {
   small_business: "Small business",
   retail: "Retail shop",
 };
+
+export function formatLiveFeedSchedule(profile: Pick<SyntheticFeedProfile, "live_interval_hours">) {
+  const hours = profile.live_interval_hours || 6;
+  return `every ${hours}h`;
+}
+
+export function formatLiveFeedTimestamp(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString();
+}
 
 export function formatDailyTxRange(profile: Pick<SyntheticFeedProfile, "daily_tx_min" | "daily_tx_max" | "daily_tx_target">) {
   const lo = profile.daily_tx_min ?? Math.max(1, profile.daily_tx_target - 7);

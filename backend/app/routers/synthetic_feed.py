@@ -1,7 +1,8 @@
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.auth.cron import verify_cron_secret
 from app.auth.dependencies import CurrentUser
 from app.config import settings
 from app.models.synthetic_feed import (
@@ -39,6 +40,13 @@ def _raise_service_error(exc: Exception) -> None:
             detail="Run Supabase migration 012_synthetic_feed.sql, then redeploy the backend.",
         ) from exc
     raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/cron/live-drip")
+async def cron_live_drip(_: None = Depends(verify_cron_secret)) -> dict:
+    """External cron hook (e.g. Railway cron). Header: X-Cron-Secret = CRON_SECRET or SECRET_KEY."""
+    _require_synthetic_feed()
+    return await svc.run_scheduled_live_drips()
 
 
 @router.post("/cleanup/keep-synthetic-only")

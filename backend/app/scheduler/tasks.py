@@ -112,11 +112,11 @@ async def daily_books_digest() -> None:
 
 
 async def synthetic_feed_drip_all() -> None:
-    from app.services.synthetic_feed_service import synthetic_feed_drip_all as _drip
+    from app.services.synthetic_feed_service import run_scheduled_live_drips
 
     try:
-        count = await _drip()
-        if count:
-            logger.info("Synthetic feed drip processed %s profiles", count)
+        result = await run_scheduled_live_drips()
+        if result.get("processed") or result.get("failed"):
+            logger.info("Synthetic feed drip: %s", result)
     except Exception:
         logger.exception("Synthetic feed drip job failed")

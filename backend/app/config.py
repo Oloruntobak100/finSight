@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     # Synthetic data feed (dev / Mono sandbox assist)
     enable_synthetic_feed: bool = False
+    # Secures POST /synthetic-feed/cron/live-drip (falls back to secret_key if unset)
+    cron_secret: str = ""
 
     # QuickBooks
     quickbooks_client_id: str = ""

@@ -198,7 +198,16 @@ export default function DataFeedAccountPage() {
       await persistProfile();
       const res = await startLiveFeed(accountId);
       setProfile(res.profile);
-      setMessage("Live feed started.");
+      const hours = res.profile.live_interval_hours || res.interval_hours || 6;
+      if (res.first_drip?.created) {
+        setMessage(
+          `Live feed started — created ${res.first_drip.created} transaction(s). Next automatic drip in ${hours}h.`
+        );
+      } else if (res.first_drip_error) {
+        setError(`Live feed enabled but the first drip failed: ${res.first_drip_error}`);
+      } else {
+        setMessage(`Live feed started. New transactions will drip automatically every ${hours}h.`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start live feed");
     } finally {
@@ -535,8 +544,8 @@ export default function DataFeedAccountPage() {
         <CardHeader>
           <CardTitle className="text-base">3. Live feed</CardTitle>
           <CardDescription>
-            Adds a small batch of new synthetic transactions on a timer (not a full backfill). Keeps the account
-            feeling active for Books, Reports, and date filters.
+            Adds a small batch of new synthetic transactions automatically on a timer (default every 6 hours).
+            Starting the feed runs the first batch immediately — no need to click Run drip now unless testing.
           </CardDescription>
         </CardHeader>
         <div className="flex flex-wrap gap-2 px-6 pb-2">

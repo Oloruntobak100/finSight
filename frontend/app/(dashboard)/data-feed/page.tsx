@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchFeedStatus, formatDailyTxRange, PERSONA_LABELS, type SyntheticFeedAccount } from "@/lib/data-feed";
+import { fetchFeedStatus, formatDailyTxRange, formatLiveFeedTimestamp, PERSONA_LABELS, type SyntheticFeedAccount } from "@/lib/data-feed";
 import { apiFetch } from "@/lib/api";
 
 export default function DataFeedPage() {
@@ -37,6 +37,16 @@ export default function DataFeedPage() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => {
+      void fetchFeedStatus()
+        .then((data) => setAccounts(data.accounts))
+        .catch(() => undefined);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
 
   if (loading) {
     return (
@@ -114,6 +124,21 @@ export default function DataFeedPage() {
                       <span className="ml-2 text-green-400">· Live feed on</span>
                     )}
                   </p>
+                  {acct.live_feed_enabled && (
+                    <p className="mt-1 text-xs text-slate-500">
+                      Last drip: {formatLiveFeedTimestamp(acct.last_live_run_at)}
+                      {acct.last_live_drip?.status === "failed" && acct.last_live_drip.error ? (
+                        <span className="ml-2 text-red-400" title={acct.last_live_drip.error}>
+                          · Last run failed
+                        </span>
+                      ) : acct.last_live_drip?.transactions_created ? (
+                        <span className="ml-2 text-slate-500">
+                          · +{acct.last_live_drip.transactions_created} txns
+                        </span>
+                      ) : null}
+                      <span className="ml-2">· Next: {formatLiveFeedTimestamp(acct.next_live_run_at)}</span>
+                    </p>
+                  )}
                 </div>
                 <ChevronRight className="h-5 w-5 text-slate-500" />
               </Link>

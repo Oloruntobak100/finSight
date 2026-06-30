@@ -484,7 +484,23 @@ async def start_live_feed(user_id: str, account_id: str) -> dict[str, Any]:
             "next_live_run_at": now.isoformat(),
         },
     )
-    return {"profile": updated, "interval_hours": interval}
+
+    first_drip: dict[str, Any] | None = None
+    first_drip_error: str | None = None
+    try:
+        first_drip = await run_live_drip(updated)
+    except Exception as exc:
+        logger.exception("Initial live drip failed for account %s", account_id)
+        first_drip_error = str(exc)[:500]
+        await _schedule_live_drip_retry(user_id, account_id, minutes=15)
+
+    refreshed = await get_or_create_profile(user_id, account_id)
+    result: dict[str, Any] = {"profile": refreshed, "interval_hours": interval}
+    if first_drip:
+        result["first_drip"] = first_drip
+    if first_drip_error:
+        result["first_drip_error"] = first_drip_error
+    return result
 
 
 async def pause_live_feed(user_id: str, account_id: str) -> dict[str, Any]:
@@ -743,14 +759,19 @@ async def list_status(user_id: str) -> dict[str, Any]:
         .execute()
     )
     profile_map = {p["account_id"]: p for p in (profiles_res.data or [])}
+    latest_drips = await _latest_live_drip_runs(user_id)
     accounts = []
     for acct in accounts_res.data or []:
         prof = profile_map.get(acct["id"])
+        drip = latest_drips.get(acct["id"])
         accounts.append(
             {
                 **acct,
                 "profile": prof,
                 "live_feed_enabled": bool(prof and prof.get("live_feed_enabled")),
+                "next_live_run_at": prof.get("next_live_run_at") if prof else None,
+                "last_live_run_at": prof.get("last_live_run_at") if prof else None,
+                "last_live_drip": drip,
             }
         )
     return {
@@ -796,11 +817,43 @@ async def list_runs(user_id: str, account_id: str, page: int = 1, limit: int = 2
     }
 
 
-async def synthetic_feed_drip_all() -> int:
-    if not synthetic_feed_allowed():
-        return 0
+async def _schedule_live_drip_retry(user_id: str, account_id: str, *, minutes: int = 30) -> None:
+    next_run = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    await _upsert_profile_row(
+        user_id,
+        account_id,
+        {"next_live_run_at": next_run.isoformat(), "status": "active"},
+    )
+
+
+async def _latest_live_drip_runs(user_id: str) -> dict[str, dict[str, Any]]:
+    """Most recent live_drip run per account for status display."""
     sb = get_supabase()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    res = await run_db(
+        lambda: sb.table("synthetic_feed_runs")
+        .select("account_id, status, error, transactions_created, started_at, finished_at")
+        .eq("user_id", user_id)
+        .eq("run_type", "live_drip")
+        .order("started_at", desc=True)
+        .limit(200)
+        .execute()
+    )
+    latest: dict[str, dict[str, Any]] = {}
+    for row in res.data or []:
+        aid = row.get("account_id")
+        if aid and aid not in latest:
+            latest[aid] = row
+    return latest
+
+
+async def run_scheduled_live_drips() -> dict[str, Any]:
+    """Run all due synthetic live drips. Safe to call from scheduler, startup, or HTTP cron."""
+    if not synthetic_feed_allowed():
+        return {"processed": 0, "failed": 0, "skipped": True, "errors": []}
+
+    sb = get_supabase()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     res = await run_db(
         lambda: sb.table("synthetic_feed_profiles")
         .select("*")
@@ -808,11 +861,27 @@ async def synthetic_feed_drip_all() -> int:
         .lte("next_live_run_at", now_iso)
         .execute()
     )
+
     processed = 0
+    failed = 0
+    errors: list[dict[str, str]] = []
     for profile in res.data or []:
+        account_id = str(profile.get("account_id") or "")
+        user_id = str(profile.get("user_id") or "")
         try:
             await run_live_drip(profile)
             processed += 1
-        except Exception:
+        except Exception as exc:
+            failed += 1
+            err = str(exc)[:500]
+            errors.append({"account_id": account_id, "error": err})
             logger.exception("Live drip failed for profile %s", profile.get("id"))
-    return processed
+            if user_id and account_id:
+                await _schedule_live_drip_retry(user_id, account_id, minutes=30)
+
+    return {"processed": processed, "failed": failed, "skipped": False, "errors": errors}
+
+
+async def synthetic_feed_drip_all() -> dict[str, Any]:
+    """Backward-compatible alias used by scheduler tasks."""
+    return await run_scheduled_live_drips()
