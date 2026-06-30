@@ -32,6 +32,7 @@ function isPairedItem(item: ReconciliationItem): boolean {
     item.source === "BOTH" ||
     item.match_status === "SUGGESTED" ||
     item.match_status === "AMOUNT_MATCH_SUGGESTED" ||
+    item.match_status === "AMBIGUOUS_MATCH" ||
     Boolean(item.mono_transaction_date && item.qbo_transaction_date)
   );
 }
@@ -53,7 +54,9 @@ function MatchPairedCard({
   const qboDate = item.qbo_transaction_date ?? item.transaction_date ?? "";
   const statusLabel = MATCH_STATUS_LABELS[item.match_status] ?? item.match_status;
   const needsConfirm =
-    item.match_status === "SUGGESTED" || item.match_status === "AMOUNT_MATCH_SUGGESTED";
+    item.match_status === "SUGGESTED" ||
+    item.match_status === "AMOUNT_MATCH_SUGGESTED" ||
+    item.match_status === "AMBIGUOUS_MATCH";
   const locked = run?.status === "LOCKED";
 
   return (

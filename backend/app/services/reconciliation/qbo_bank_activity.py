@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.services.quickbooks_service import qb_query
+from app.services.reconciliation.identity_matching import parse_finsight_transaction_id
 
 QBO_PAGE_SIZE = 500
 
@@ -61,6 +62,8 @@ def _normalize_purchase(purchase: dict[str, Any], qb_bank_account_id: str) -> di
     if bank_ref != str(qb_bank_account_id):
         return None
     amount = abs(float(purchase.get("TotalAmt") or 0))
+    private_note = purchase.get("PrivateNote") or ""
+
     return {
         "source": "QBO",
         "qbo_entity_id": str(purchase.get("Id") or ""),
@@ -70,8 +73,10 @@ def _normalize_purchase(purchase: dict[str, Any], qb_bank_account_id: str) -> di
         "signed_amount": -amount,
         "currency": "NGN",
         "direction": "out",
-        "payee": (purchase.get("EntityRef") or {}).get("name") or purchase.get("PrivateNote") or "",
-        "narration": purchase.get("PrivateNote") or "",
+        "payee": (purchase.get("EntityRef") or {}).get("name") or private_note or "",
+        "narration": private_note,
+        "private_note": private_note,
+        "finsight_transaction_id": parse_finsight_transaction_id(private_note),
         "reference": purchase.get("DocNumber") or "",
     }
 
@@ -81,6 +86,8 @@ def _normalize_deposit(deposit: dict[str, Any], qb_bank_account_id: str) -> dict
     if bank_ref != str(qb_bank_account_id):
         return None
     amount = abs(float(deposit.get("TotalAmt") or 0))
+    private_note = deposit.get("PrivateNote") or ""
+
     return {
         "source": "QBO",
         "qbo_entity_id": str(deposit.get("Id") or ""),
@@ -90,8 +97,10 @@ def _normalize_deposit(deposit: dict[str, Any], qb_bank_account_id: str) -> dict
         "signed_amount": amount,
         "currency": "NGN",
         "direction": "in",
-        "payee": deposit.get("PrivateNote") or "",
-        "narration": deposit.get("PrivateNote") or "",
+        "payee": private_note or "",
+        "narration": private_note,
+        "private_note": private_note,
+        "finsight_transaction_id": parse_finsight_transaction_id(private_note),
         "reference": deposit.get("DocNumber") or "",
     }
 
@@ -109,6 +118,8 @@ def _normalize_transfer(transfer: dict[str, Any], qb_bank_account_id: str) -> di
     else:
         return None
     amount = abs(signed)
+    private_note = transfer.get("PrivateNote") or ""
+
     return {
         "source": "QBO",
         "qbo_entity_id": str(transfer.get("Id") or ""),
@@ -119,7 +130,9 @@ def _normalize_transfer(transfer: dict[str, Any], qb_bank_account_id: str) -> di
         "currency": "NGN",
         "direction": direction,
         "payee": "Transfer",
-        "narration": transfer.get("PrivateNote") or "Transfer",
+        "narration": private_note or "Transfer",
+        "private_note": private_note,
+        "finsight_transaction_id": parse_finsight_transaction_id(private_note),
         "reference": transfer.get("DocNumber") or "",
     }
 

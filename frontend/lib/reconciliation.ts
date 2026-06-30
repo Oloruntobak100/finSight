@@ -225,6 +225,7 @@ export const MATCH_STATUS_LABELS: Record<string, string> = {
   MATCHED_FUZZY: "Matched (fuzzy)",
   SUGGESTED: "Suggested",
   AMOUNT_MATCH_SUGGESTED: "Amount match (confirm)",
+  AMBIGUOUS_MATCH: "Ambiguous (pick match)",
   DEPOSITS_IN_TRANSIT: "Deposit in transit",
   OUTSTANDING_PAYMENT: "Outstanding payment",
   UNRECORDED_BANK_CREDIT: "Unrecorded credit",

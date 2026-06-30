@@ -15,6 +15,11 @@ from app.services.reconciliation.balance_proof_service import recalculate_balanc
 from app.services.reconciliation.mono_bank_activity import load_mono_bank_activity, mono_closing_balance
 from app.services.reconciliation.qbo_bank_activity import load_qbo_bank_activity, qbo_bank_account_balance_as_of
 from app.services.reconciliation.setup_service import preview_balances
+from app.services.reconciliation.identity_matching import (
+    amounts_match,
+    is_ambiguous_auto_match,
+    transaction_dates_match,
+)
 from app.services.reconciliation.scoring import (
     AUTO_MATCH_THRESHOLD,
     classify_score,
@@ -116,6 +121,50 @@ async def _resolve_qb_bank(user_id: str, mono_account_id: str, qb_bank_account_i
     if bank_map and bank_map.get("qb_account_id"):
         return str(bank_map["qb_account_id"])
     raise ValueError("QuickBooks bank account is required. Map this bank under Books → Mappings.")
+
+
+def _ref_lookup_key(direction: str | None, amount: float, reference: str | None) -> tuple[str, int, str] | None:
+    ref = (reference or "").strip().lower()
+    if not ref:
+        return None
+    return (direction or "", _amount_bucket(amount), ref)
+
+
+def _record_both_match(
+    *,
+    items: list[dict[str, Any]],
+    run_id: str,
+    user_id: str,
+    mono: dict[str, Any],
+    qbo: dict[str, Any],
+    match_status: str,
+    match_score: float,
+    used_mono: set[str],
+    used_qbo: set[str],
+) -> None:
+    mid = mono.get("mono_transaction_id") or ""
+    qid = qbo.get("qbo_entity_id") or ""
+    used_mono.add(mid)
+    used_qbo.add(qid)
+    mono_date = str(mono.get("transaction_date") or "")[:10]
+    qbo_date = str(qbo.get("transaction_date") or "")[:10]
+    merged = {
+        **mono,
+        **qbo,
+        "source": "BOTH",
+        "mono_transaction_date": mono_date,
+        "qbo_transaction_date": qbo_date,
+    }
+    items.append(
+        _item_row(
+            run_id=run_id,
+            user_id=user_id,
+            source="BOTH",
+            match_status=match_status,
+            line=merged,
+            match_score=match_score,
+        )
+    )
 
 
 def _item_row(
@@ -237,6 +286,16 @@ async def run_matching_engine(
     await _import_prior_outstanding(user_id, run_id, mono_account_id, resolved_qb)
 
     qbo_by_id = {line["qbo_entity_id"]: line for line in qbo_lines if line.get("qbo_entity_id")}
+    qbo_by_finsight: dict[str, dict[str, Any]] = {}
+    qbo_by_ref: dict[tuple[str, int, str], list[dict[str, Any]]] = defaultdict(list)
+    for line in qbo_lines:
+        fid = line.get("finsight_transaction_id")
+        if fid:
+            qbo_by_finsight[str(fid).lower()] = line
+        ref_key = _ref_lookup_key(line.get("direction"), float(line.get("amount") or 0), line.get("reference"))
+        if ref_key:
+            qbo_by_ref[ref_key].append(line)
+
     used_mono: set[str] = set()
     used_qbo: set[str] = set()
     items_to_insert: list[dict[str, Any]] = []
@@ -250,35 +309,99 @@ async def run_matching_engine(
         if not qbo:
             continue
         mid = mono.get("mono_transaction_id") or ""
+        if mid in used_mono or qbo["qbo_entity_id"] in used_qbo:
+            continue
         mono_date = str(mono.get("transaction_date") or "")[:10]
         qbo_date = str(qbo.get("transaction_date") or "")[:10]
         if mono_date != qbo_date:
-            used_mono.add(mid)
-            used_qbo.add(qbo["qbo_entity_id"])
-            merged = {**mono, **qbo, "source": "BOTH", "mono_transaction_date": mono_date, "qbo_transaction_date": qbo_date}
-            items_to_insert.append(
-                _item_row(
-                    run_id=run_id,
-                    user_id=user_id,
-                    source="BOTH",
-                    match_status="FLAG_FOR_REVIEW",
-                    line=merged,
-                    match_score=0.5,
-                )
-            )
-            continue
-        used_mono.add(mid)
-        used_qbo.add(qbo["qbo_entity_id"])
-        merged = {**mono, **qbo, "source": "BOTH", "mono_transaction_date": mono_date, "qbo_transaction_date": qbo_date}
-        items_to_insert.append(
-            _item_row(
+            _record_both_match(
+                items=items_to_insert,
                 run_id=run_id,
                 user_id=user_id,
-                source="BOTH",
-                match_status="MATCHED_EXACT",
-                line=merged,
-                match_score=1.0,
+                mono=mono,
+                qbo=qbo,
+                match_status="FLAG_FOR_REVIEW",
+                match_score=0.5,
+                used_mono=used_mono,
+                used_qbo=used_qbo,
             )
+            continue
+        _record_both_match(
+            items=items_to_insert,
+            run_id=run_id,
+            user_id=user_id,
+            mono=mono,
+            qbo=qbo,
+            match_status="MATCHED_EXACT",
+            match_score=1.0,
+            used_mono=used_mono,
+            used_qbo=used_qbo,
+        )
+
+    # Pass 1.5 — FinSight UUID in QBO PrivateNote (FinSight:{transaction_id})
+    for mono in mono_lines:
+        mid = mono.get("mono_transaction_id") or ""
+        if mid in used_mono:
+            continue
+        qbo = qbo_by_finsight.get(mid.lower())
+        if not qbo:
+            continue
+        qid = qbo.get("qbo_entity_id") or ""
+        if qid in used_qbo:
+            continue
+        if not amounts_match(mono, qbo):
+            continue
+        if not transaction_dates_match(mono, qbo):
+            _record_both_match(
+                items=items_to_insert,
+                run_id=run_id,
+                user_id=user_id,
+                mono=mono,
+                qbo=qbo,
+                match_status="FLAG_FOR_REVIEW",
+                match_score=0.5,
+                used_mono=used_mono,
+                used_qbo=used_qbo,
+            )
+            continue
+        _record_both_match(
+            items=items_to_insert,
+            run_id=run_id,
+            user_id=user_id,
+            mono=mono,
+            qbo=qbo,
+            match_status="MATCHED_EXACT",
+            match_score=1.0,
+            used_mono=used_mono,
+            used_qbo=used_qbo,
+        )
+
+    # Pass 1b — exact bank reference + amount + date (DocNumber)
+    for mono in mono_lines:
+        mid = mono.get("mono_transaction_id") or ""
+        if mid in used_mono:
+            continue
+        ref_key = _ref_lookup_key(mono.get("direction"), float(mono.get("amount") or 0), mono.get("reference"))
+        if not ref_key:
+            continue
+        candidates = [
+            q for q in qbo_by_ref.get(ref_key, []) if (q.get("qbo_entity_id") or "") not in used_qbo
+        ]
+        if len(candidates) != 1:
+            continue
+        qbo = candidates[0]
+        if not transaction_dates_match(mono, qbo):
+            continue
+        _record_both_match(
+            items=items_to_insert,
+            run_id=run_id,
+            user_id=user_id,
+            mono=mono,
+            qbo=qbo,
+            match_status="MATCHED_EXACT",
+            match_score=1.0,
+            used_mono=used_mono,
+            used_qbo=used_qbo,
         )
 
     # Pass 3 — prior outstanding (before fuzzy)
@@ -346,8 +469,7 @@ async def run_matching_engine(
         qbo_by_bucket[(qbo.get("direction"), _amount_bucket(qbo["amount"]))].append(qbo)
 
     for mono in remaining_mono:
-        best_score = 0.0
-        best_qbo: dict[str, Any] | None = None
+        scored: list[tuple[float, dict[str, Any]]] = []
         for qbo in _fuzzy_candidates(mono, qbo_by_bucket, used_qbo):
             score = compute_match_score(
                 amount_a=mono["amount"],
@@ -359,9 +481,13 @@ async def run_matching_engine(
                 ref_a=mono.get("reference"),
                 ref_b=qbo.get("reference"),
             )
-            if score > best_score:
-                best_score = score
-                best_qbo = qbo
+            scored.append((score, qbo))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+
+        if not scored:
+            continue
+
+        best_score, best_qbo = scored[0]
 
         if best_qbo and is_amount_only_match(
             mono["amount"],
@@ -389,6 +515,15 @@ async def run_matching_engine(
                 )
             )
         elif best_qbo and best_score >= AUTO_MATCH_THRESHOLD:
+            if is_ambiguous_auto_match(
+                scored_candidates=scored,
+                mono=mono,
+                best_qbo=best_qbo,
+                best_score=best_score,
+            ):
+                match_status = "AMBIGUOUS_MATCH"
+            else:
+                match_status = "MATCHED_FUZZY"
             used_mono.add(mono.get("mono_transaction_id") or "")
             used_qbo.add(best_qbo["qbo_entity_id"])
             merged = {**mono, **best_qbo, "source": "BOTH"}
@@ -397,7 +532,7 @@ async def run_matching_engine(
                     run_id=run_id,
                     user_id=user_id,
                     source="BOTH",
-                    match_status="MATCHED_FUZZY",
+                    match_status=match_status,
                     line=merged,
                     match_score=best_score,
                 )
@@ -566,11 +701,19 @@ async def update_item(
         raise ValueError("This reconciliation is locked and cannot be modified")
 
     update: dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    if confirm_suggested and item.get("match_status") in ("SUGGESTED", "AMOUNT_MATCH_SUGGESTED"):
+    if confirm_suggested and item.get("match_status") in (
+        "SUGGESTED",
+        "AMOUNT_MATCH_SUGGESTED",
+        "AMBIGUOUS_MATCH",
+    ):
         update["match_status"] = "MATCHED_FUZZY"
         update["manually_matched_by"] = user_id
         update["manually_matched_at"] = datetime.now(timezone.utc).isoformat()
-    elif reject_suggested and item.get("match_status") in ("SUGGESTED", "AMOUNT_MATCH_SUGGESTED"):
+    elif reject_suggested and item.get("match_status") in (
+        "SUGGESTED",
+        "AMOUNT_MATCH_SUGGESTED",
+        "AMBIGUOUS_MATCH",
+    ):
         update["match_status"] = "UNEXPLAINED"
         update["source"] = "MONO" if item.get("mono_transaction_id") else "QBO"
     elif match_status:
