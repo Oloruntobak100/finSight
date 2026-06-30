@@ -1511,26 +1511,47 @@ def _apply_entity_and_doc(payload: dict[str, Any], txn: dict[str, Any]) -> dict[
     return payload
 
 
+def _deposit_line_entity(txn: dict[str, Any]) -> dict[str, str] | None:
+    """QuickBooks expects customer/vendor on DepositLineDetail.Entity, not header EntityRef."""
+    party_id = txn.get("qb_party_id")
+    party_type = txn.get("qb_party_type")
+    if not party_id or party_type not in ("Vendor", "Customer"):
+        return None
+    type_map = {"Vendor": "VENDOR", "Customer": "CUSTOMER"}
+    return {"value": str(party_id), "type": type_map[party_type]}
+
+
+def _apply_doc_number(payload: dict[str, Any], txn: dict[str, Any]) -> dict[str, Any]:
+    doc = txn.get("qb_doc_number") or txn_doc_number(txn)
+    if doc:
+        payload["DocNumber"] = doc
+    return payload
+
+
 def _build_deposit_payload(txn: dict[str, Any]) -> dict[str, Any]:
     amount = abs(float(txn.get("amount") or 0))
     txn_date = str(txn.get("transaction_date"))
     merchant = txn.get("merchant_name") or txn.get("description") or "Deposit"
+    deposit_line_detail: dict[str, Any] = {
+        "AccountRef": {"value": str(txn["qb_account_id"])},
+    }
+    line_entity = _deposit_line_entity(txn)
+    if line_entity:
+        deposit_line_detail["Entity"] = line_entity
+    line: dict[str, Any] = {
+        "Amount": amount,
+        "DetailType": "DepositLineDetail",
+        "DepositLineDetail": deposit_line_detail,
+    }
+    if merchant:
+        line["Description"] = merchant[:4000]
     payload = {
         "DepositToAccountRef": {"value": str(txn["qb_payment_account_id"])},
         "TxnDate": txn_date,
         "PrivateNote": f"FinSight:{txn['id']}",
-        "Line": [
-            {
-                "Amount": amount,
-                "Description": merchant[:4000] if merchant else None,
-                "DetailType": "DepositLineDetail",
-                "DepositLineDetail": {
-                    "AccountRef": {"value": str(txn["qb_account_id"])},
-                },
-            }
-        ],
+        "Line": [line],
     }
-    return _apply_entity_and_doc(payload, txn)
+    return _apply_doc_number(payload, txn)
 
 
 def _build_purchase_payload(txn: dict[str, Any]) -> dict[str, Any]:
@@ -1622,9 +1643,7 @@ async def post_transaction(user_id: str, transaction_id: str, *, is_auto: bool =
     offset_type = (coa_row or {}).get("account_type")
     posting_type = txn.get("qb_posting_type") or "expense"
     entity = resolve_posting_entity(txn.get("transaction_type"), offset_type)
-    if posting_type == "transfer":
-        entity = "transfer"
-    elif posting_type == "refund":
+    if posting_type == "refund":
         entity = "deposit"
 
     if entity == "transfer":

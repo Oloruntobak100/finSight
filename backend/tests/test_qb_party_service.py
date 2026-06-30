@@ -1,6 +1,6 @@
 """Tests for QuickBooks vendor/customer party helpers."""
 
-from app.services.books_service import _apply_entity_and_doc, _build_purchase_payload
+from app.services.books_service import _apply_entity_and_doc, _build_deposit_payload, _build_purchase_payload
 from app.services.qb_party_service import (
     normalize_party_lookup,
     qb_party_type_for_posting,
@@ -83,10 +83,15 @@ def test_doc_number_from_mono_ref():
 def test_apply_entity_and_doc_on_deposit():
     txn = {
         "id": "t2",
+        "transaction_date": "2026-06-27",
+        "amount": 50000,
+        "qb_payment_account_id": "35",
+        "qb_account_id": "42",
         "qb_party_id": "7",
         "qb_party_type": "Customer",
         "raw_metadata": {"metadata": {"ref_num": "REF-1"}},
     }
-    payload = _apply_entity_and_doc({"Line": []}, txn)
-    assert payload["EntityRef"]["type"] == "Customer"
+    payload = _build_deposit_payload(txn)
+    assert "EntityRef" not in payload
+    assert payload["Line"][0]["DepositLineDetail"]["Entity"] == {"value": "7", "type": "CUSTOMER"}
     assert payload["DocNumber"] == "REF-1"
