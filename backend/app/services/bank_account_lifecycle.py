@@ -2,14 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from app.database import get_supabase, run_db
 
+logger = logging.getLogger(__name__)
+
 BANK_PROVIDERS = ("plaid", "mono")
 OPEN_RECON_STATUSES = ("DRAFT", "IN_REVIEW", "ADJUSTED")
 UNARCHIVE_BATCH = 100
+AUTO_RESTORE_BUDGET = 150
+
+
+def _batch_size(limit: int | None, restored: int) -> int:
+    if limit is None:
+        return UNARCHIVE_BATCH
+    remaining = limit - restored
+    if remaining <= 0:
+        return 0
+    return min(UNARCHIVE_BATCH, remaining)
 
 
 def bank_mapping_keys(account_id: str, external_account_id: str | None = None) -> list[str]:
@@ -118,57 +131,65 @@ async def _clear_archived_at(user_id: str, ids: list[str]) -> int:
     return len(ids)
 
 
-async def unarchive_transactions_for_account(user_id: str, account_id: str) -> int:
+async def unarchive_transactions_for_account(
+    user_id: str, account_id: str, *, limit: int | None = None
+) -> int:
     sb = get_supabase()
     total = 0
     while True:
+        batch = _batch_size(limit, total)
+        if batch <= 0:
+            break
         res = await run_db(
-            lambda: sb.table("transactions")
+            lambda size=batch: sb.table("transactions")
             .select("id")
             .eq("user_id", user_id)
             .eq("account_id", account_id)
             .not_.is_("archived_at", "null")
-            .limit(UNARCHIVE_BATCH)
+            .limit(size)
             .execute()
         )
         ids = [row["id"] for row in (res.data or []) if row.get("id")]
         if not ids:
             break
         total += await _clear_archived_at(user_id, ids)
-        if len(ids) < UNARCHIVE_BATCH:
+        if len(ids) < batch:
             break
     return total
 
 
 async def unarchive_orphaned_bank_transactions(
-    user_id: str, account_id: str, provider: str
+    user_id: str, account_id: str, provider: str, *, limit: int | None = None
 ) -> int:
     """Relink and unarchive bank rows detached by legacy hard-delete (account_id IS NULL)."""
     sb = get_supabase()
     total = 0
     while True:
+        batch = _batch_size(limit, total)
+        if batch <= 0:
+            break
         res = await run_db(
-            lambda: sb.table("transactions")
+            lambda size=batch: sb.table("transactions")
             .select("id")
             .eq("user_id", user_id)
             .eq("source_provider", provider)
             .is_("account_id", "null")
             .not_.is_("archived_at", "null")
-            .limit(UNARCHIVE_BATCH)
+            .limit(size)
             .execute()
         )
         ids = [row["id"] for row in (res.data or []) if row.get("id")]
         if not ids:
             break
         await run_db(
-            lambda: sb.table("transactions")
+            lambda row_ids=ids: sb.table("transactions")
             .update({"account_id": account_id, "archived_at": None})
             .eq("user_id", user_id)
-            .in_("id", ids)
+            .in_("id", row_ids)
             .execute()
         )
         total += len(ids)
-        if len(ids) < UNARCHIVE_BATCH:
+        if len(ids) < batch:
             break
     return total
 
@@ -194,7 +215,7 @@ async def maybe_auto_restore_bank_data(
     *,
     visible_count: int,
 ) -> dict[str, int] | None:
-    """Restore archived bank rows when an active account shows zero visible transactions."""
+    """Restore a small batch of archived bank rows when an account shows zero visible txns."""
     if visible_count > 0 or not bank_accounts:
         return None
     totals: dict[str, int] = {
@@ -204,22 +225,27 @@ async def maybe_auto_restore_bank_data(
         "reconciliation_runs_relinked": 0,
     }
     restored = False
-    for account in bank_accounts:
-        provider = account.get("provider")
-        if provider not in BANK_PROVIDERS or account.get("status") == "disconnected":
-            continue
-        archived = await count_archived_bank_transactions(user_id, provider)
-        if archived <= 0:
-            continue
-        result = await restore_bank_account_continuity(
-            user_id,
-            account["id"],
-            provider,
-            account.get("external_account_id"),
-        )
-        for key in totals:
-            totals[key] += int(result.get(key) or 0)
-        restored = True
+    try:
+        for account in bank_accounts:
+            provider = account.get("provider")
+            if provider not in BANK_PROVIDERS or account.get("status") == "disconnected":
+                continue
+            archived = await count_archived_bank_transactions(user_id, provider)
+            if archived <= 0:
+                continue
+            result = await restore_bank_account_continuity(
+                user_id,
+                account["id"],
+                provider,
+                account.get("external_account_id"),
+                max_rows=AUTO_RESTORE_BUDGET,
+            )
+            for key in totals:
+                totals[key] += int(result.get(key) or 0)
+            restored = True
+    except Exception as exc:
+        logger.warning("Auto-restore skipped for user %s: %s", user_id, exc)
+        return None
     return totals if restored else None
 
 
@@ -227,6 +253,8 @@ async def relink_legacy_archived_transactions(
     user_id: str,
     account_id: str,
     provider: str,
+    *,
+    limit: int | None = None,
 ) -> int:
     """Relink archived bank txs from deleted/disconnected account rows to the current one."""
     sb = get_supabase()
@@ -248,25 +276,28 @@ async def relink_legacy_archived_transactions(
     total = 0
     offset = 0
     while True:
+        batch = _batch_size(limit, total)
+        if batch <= 0:
+            break
         page_offset = offset
 
-        def _page(off: int = page_offset) -> Any:
+        def _page(off: int = page_offset, size: int = batch) -> Any:
             return (
                 sb.table("transactions")
                 .select("id, account_id")
                 .eq("user_id", user_id)
                 .eq("source_provider", provider)
                 .not_.is_("archived_at", "null")
-                .range(off, off + UNARCHIVE_BATCH - 1)
+                .range(off, off + size - 1)
                 .execute()
             )
 
         res = await run_db(_page)
-        batch = res.data or []
-        if not batch:
+        batch_rows = res.data or []
+        if not batch_rows:
             break
         relink_ids: list[str] = []
-        for row in batch:
+        for row in batch_rows:
             tid = row.get("id")
             old_account_id = row.get("account_id")
             if not tid:
@@ -287,6 +318,11 @@ async def relink_legacy_archived_transactions(
                 if old_row and old_row.get("status") == "disconnected":
                     relink_ids.append(tid)
         if relink_ids:
+            if limit is not None:
+                room = limit - total
+                if room <= 0:
+                    break
+                relink_ids = relink_ids[:room]
             await run_db(
                 lambda ids=relink_ids: sb.table("transactions")
                 .update({"account_id": account_id, "archived_at": None})
@@ -295,8 +331,8 @@ async def relink_legacy_archived_transactions(
                 .execute()
             )
             total += len(relink_ids)
-        offset += UNARCHIVE_BATCH
-        if len(batch) < UNARCHIVE_BATCH:
+        offset += batch
+        if len(batch_rows) < batch or (limit is not None and total >= limit):
             break
     return total
 
@@ -443,12 +479,28 @@ async def restore_bank_account_continuity(
     account_id: str,
     provider: str,
     external_account_id: str | None,
+    *,
+    max_rows: int | None = None,
 ) -> dict[str, int]:
-    unarchived = await unarchive_transactions_for_account(user_id, account_id)
-    orphaned = await unarchive_orphaned_bank_transactions(user_id, account_id, provider)
-    legacy = await relink_legacy_archived_transactions(user_id, account_id, provider)
-    await migrate_bank_mapping_alias(user_id, account_id, external_account_id)
-    relinked = await relink_open_reconciliation(user_id, account_id, provider)
+    remaining = max_rows
+    unarchived = await unarchive_transactions_for_account(
+        user_id, account_id, limit=remaining
+    )
+    if remaining is not None:
+        remaining = max(0, remaining - unarchived)
+    orphaned = await unarchive_orphaned_bank_transactions(
+        user_id, account_id, provider, limit=remaining
+    )
+    if remaining is not None:
+        remaining = max(0, remaining - orphaned)
+    legacy = await relink_legacy_archived_transactions(
+        user_id, account_id, provider, limit=remaining
+    )
+    if max_rows is None:
+        await migrate_bank_mapping_alias(user_id, account_id, external_account_id)
+        relinked = await relink_open_reconciliation(user_id, account_id, provider)
+    else:
+        relinked = 0
     return {
         "unarchived": unarchived,
         "orphaned_unarchived": orphaned,

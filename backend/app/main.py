@@ -61,7 +61,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     if isinstance(exc, RequestValidationError):
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
-    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    logger.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 app.include_router(banking.router)

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.bank_account_lifecycle import (
+    AUTO_RESTORE_BUDGET,
     bank_mapping_keys,
     bank_mapping_lookup,
     connect_or_reactivate_bank_account,
@@ -90,7 +91,9 @@ async def test_maybe_auto_restore_when_archived_exist():
 
     assert result is not None
     assert result["legacy_relinked"] == 2
-    restore.assert_awaited_once()
+    restore.assert_awaited_once_with(
+        "user-1", "new-acct", "mono", "mono-1", max_rows=AUTO_RESTORE_BUDGET
+    )
 
 
 @pytest.mark.asyncio
