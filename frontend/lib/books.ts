@@ -12,6 +12,39 @@ export type QbSyncStatus =
 
 export type RevertTarget = "needs_review" | "unclassified";
 
+export function parseBooksDateRange(searchParams: URLSearchParams) {
+  return {
+    dateFrom: searchParams.get("date_from") || "",
+    dateTo: searchParams.get("date_to") || "",
+  };
+}
+
+export function buildBooksUrl(
+  pathname: string,
+  params: {
+    status?: QbSyncStatus;
+    page?: number;
+    dateFrom?: string;
+    dateTo?: string;
+    preserveFrom?: URLSearchParams;
+  }
+): string {
+  const sp = new URLSearchParams();
+  const status = params.status ?? params.preserveFrom?.get("status") ?? undefined;
+  const dateFrom = params.dateFrom ?? params.preserveFrom?.get("date_from") ?? "";
+  const dateTo = params.dateTo ?? params.preserveFrom?.get("date_to") ?? "";
+  if (status) sp.set("status", status);
+  if (params.page && params.page > 1) sp.set("page", String(params.page));
+  if (dateFrom) sp.set("date_from", dateFrom);
+  if (dateTo) sp.set("date_to", dateTo);
+  const q = sp.toString();
+  return q ? `${pathname}?${q}` : pathname;
+}
+
+export function appendBooksDateParams(pathname: string, searchParams: URLSearchParams): string {
+  return buildBooksUrl(pathname, { preserveFrom: searchParams });
+}
+
 export type SuggestionMethod =
   | "rule"
   | "fingerprint"
