@@ -17,6 +17,7 @@ interface Metrics {
 
 interface Balances {
   total_balance: number;
+  primary_currency?: string;
   accounts: Array<{
     institution_name: string;
     name: string;
@@ -34,6 +35,7 @@ interface Transaction {
   category: string;
   amount: number;
   transaction_type: string;
+  currency?: string;
 }
 
 export default function DashboardPage() {
@@ -55,15 +57,27 @@ export default function DashboardPage() {
     });
   }, []);
 
+  const displayCurrency =
+    balances?.primary_currency || balances?.accounts[0]?.currency || "NGN";
+
   const kpis = [
     {
       label: "Total Balance",
-      value: balances ? formatCurrency(balances.total_balance) : "—",
+      value: balances ? formatCurrency(balances.total_balance, displayCurrency) : "—",
       highlight: true,
     },
-    { label: "Monthly Income", value: metrics ? formatCurrency(metrics.total_income) : "—" },
-    { label: "Monthly Expenses", value: metrics ? formatCurrency(metrics.total_expenses) : "—" },
-    { label: "Net Cash Flow", value: metrics ? formatCurrency(metrics.net_cash_flow) : "—" },
+    {
+      label: "Monthly Income",
+      value: metrics ? formatCurrency(metrics.total_income, displayCurrency) : "—",
+    },
+    {
+      label: "Monthly Expenses",
+      value: metrics ? formatCurrency(metrics.total_expenses, displayCurrency) : "—",
+    },
+    {
+      label: "Net Cash Flow",
+      value: metrics ? formatCurrency(metrics.net_cash_flow, displayCurrency) : "—",
+    },
   ];
 
   return (
@@ -161,7 +175,7 @@ export default function DashboardPage() {
                       className={`py-3 text-right ${txn.transaction_type === "credit" ? "text-green-400" : "text-white"}`}
                     >
                       {txn.transaction_type === "credit" ? "+" : "-"}
-                      {formatCurrency(txn.amount)}
+                      {formatCurrency(txn.amount, txn.currency || displayCurrency)}
                     </td>
                   </tr>
                 ))
