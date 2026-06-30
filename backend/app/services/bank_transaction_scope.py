@@ -131,6 +131,8 @@ async def count_scoped_transactions(
     *,
     qb_sync_status: str | None = None,
     unclassified: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> int:
     sb = get_supabase()
     query = (
@@ -143,6 +145,10 @@ async def count_scoped_transactions(
         query = query.is_("qb_sync_status", "null")
     elif qb_sync_status is not None:
         query = query.eq("qb_sync_status", qb_sync_status)
+    if date_from:
+        query = query.gte("transaction_date", date_from[:10])
+    if date_to:
+        query = query.lte("transaction_date", date_to[:10])
     res = await run_db(lambda: query.execute())
     return res.count or 0
 

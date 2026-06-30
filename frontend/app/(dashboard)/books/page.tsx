@@ -464,7 +464,7 @@ function BooksQueueContent() {
     async (statusFilter: QbSyncStatus, pageNum: number, from?: string, to?: string) => {
       const [queue, sum] = await Promise.all([
         getBooksQueue(statusFilter, pageNum, 20, from || undefined, to || undefined),
-        getBooksSummary(),
+        getBooksSummary(from || undefined, to || undefined),
       ]);
       setItems(queue.items);
       setTotalPages(queue.total_pages);
@@ -486,7 +486,7 @@ function BooksQueueContent() {
         const result = await classifyTransactions();
         total += result.classified;
         remaining = result.remaining_unclassified;
-        const sum = await getBooksSummary();
+        const sum = await getBooksSummary(dateFrom || undefined, dateTo || undefined);
         setCoverage(sum.coverage ?? null);
         setSummary(sum.counts);
         setClassifyProgress(
@@ -557,7 +557,7 @@ function BooksQueueContent() {
           await runClassifyAll();
           return;
         }
-        const sum = await getBooksSummary();
+        const sum = await getBooksSummary(dateFrom || undefined, dateTo || undefined);
         setReadiness(sum.readiness ?? null);
         setSummary(sum.counts);
         setCoverage(sum.coverage ?? null);
@@ -583,7 +583,7 @@ function BooksQueueContent() {
         setQbEnvironment(qb.environment ?? null);
         if (!qb.connected) return;
 
-        const sum = await getBooksSummary();
+        const sum = await getBooksSummary(dateFrom || undefined, dateTo || undefined);
         if (cancelled) return;
         setReadiness(sum.readiness ?? null);
         setSummary(sum.counts);
@@ -1042,20 +1042,6 @@ function BooksQueueContent() {
                 Auto-post{" "}
                 <span className={automation.auto_approve_enabled ? "text-emerald-400" : "text-slate-400"}>
                   {automation.auto_approve_enabled ? "on" : "off"}
-                </span>
-              </>
-            )}
-            {dateFilterActive && (
-              <>
-                {" · "}
-                <span className="text-blue-300">
-                  {queueTotal} in period
-                  {(summary[status] ?? 0) > queueTotal ? (
-                    <span className="text-slate-500">
-                      {" "}
-                      ({(summary[status] ?? 0) - queueTotal} outside {dateFrom}–{dateTo})
-                    </span>
-                  ) : null}
                 </span>
               </>
             )}

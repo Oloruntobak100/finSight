@@ -276,8 +276,12 @@ async def books_queue_groups(
 
 
 @router.get("/summary", response_model=BooksSummaryResponse)
-async def books_summary(user_id: CurrentUser) -> BooksSummaryResponse:
-    data = await get_summary(user_id)
+async def books_summary(
+    user_id: CurrentUser,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+) -> BooksSummaryResponse:
+    data = await get_summary(user_id, date_from=date_from, date_to=date_to)
     return BooksSummaryResponse(**data)
 
 

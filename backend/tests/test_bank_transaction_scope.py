@@ -98,7 +98,15 @@ async def test_archive_detached_archives_orphan_and_stale_rows():
 
 @pytest.mark.asyncio
 async def test_get_summary_aggregates_exact_counts():
-    async def fake_count(user_id, active_bank_ids, *, qb_sync_status=None, unclassified=False):
+    async def fake_count(
+        user_id,
+        active_bank_ids,
+        *,
+        qb_sync_status=None,
+        unclassified=False,
+        date_from=None,
+        date_to=None,
+    ):
         if unclassified:
             return 700
         if qb_sync_status == "needs_review":
@@ -115,7 +123,9 @@ async def test_get_summary_aggregates_exact_counts():
         side_effect=fake_count,
     ), patch(
         "app.services.books_service._count_books_queue_status",
-        side_effect=lambda _uid, _ids, status: 303 if status == "needs_review" else 0,
+        side_effect=lambda _uid, _ids, status, date_from=None, date_to=None: 303
+        if status == "needs_review"
+        else 0,
     ), patch(
         "app.services.books_service.get_user_automation",
         AsyncMock(return_value={"auto_approve_enabled": False, "auto_approve_threshold": 0.9, "digest_enabled": True}),

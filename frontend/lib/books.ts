@@ -263,8 +263,12 @@ export async function getBooksGroups(status: QbSyncStatus = "pending"): Promise<
   return apiFetch(`/books/groups?status=${status}`);
 }
 
-export async function getBooksSummary(): Promise<BooksSummary> {
-  return apiFetch("/books/summary");
+export async function getBooksSummary(dateFrom?: string, dateTo?: string): Promise<BooksSummary> {
+  const params = new URLSearchParams();
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  const q = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch(`/books/summary${q}`);
 }
 
 export async function approveTransaction(

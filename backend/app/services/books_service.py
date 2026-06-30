@@ -774,6 +774,9 @@ async def _count_books_queue_status(
     user_id: str,
     active_bank_ids: set[str],
     status: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> int:
     sb = get_supabase()
     query = (
@@ -784,6 +787,7 @@ async def _count_books_queue_status(
     )
     query = _apply_books_account_filter(query, active_bank_ids)
     query = _apply_books_queue_status_filter(query, status)
+    query = _apply_books_queue_date_filter(query, date_from=date_from, date_to=date_to)
     res = await run_db(lambda: query.execute())
     return res.count or 0
 
@@ -913,7 +917,12 @@ async def get_books_readiness(user_id: str) -> dict[str, Any]:
     }
 
 
-async def get_summary(user_id: str) -> dict[str, Any]:
+async def get_summary(
+    user_id: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
     _, active_bank_ids = await _active_bank_accounts(user_id)
     counts: dict[str, int] = {}
     coverage = {
@@ -923,13 +932,25 @@ async def get_summary(user_id: str) -> dict[str, Any]:
     }
     if active_bank_ids:
         count_tasks = [
-            count_scoped_transactions(user_id, active_bank_ids, unclassified=True),
+            count_scoped_transactions(
+                user_id, active_bank_ids, unclassified=True, date_from=date_from, date_to=date_to
+            ),
             *[
-                count_scoped_transactions(user_id, active_bank_ids, qb_sync_status=st)
+                count_scoped_transactions(
+                    user_id,
+                    active_bank_ids,
+                    qb_sync_status=st,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
                 for st in SUMMARY_STATUSES
             ],
-            _count_books_queue_status(user_id, active_bank_ids, "needs_review"),
-            _count_books_queue_status(user_id, active_bank_ids, "failed"),
+            _count_books_queue_status(
+                user_id, active_bank_ids, "needs_review", date_from=date_from, date_to=date_to
+            ),
+            _count_books_queue_status(
+                user_id, active_bank_ids, "failed", date_from=date_from, date_to=date_to
+            ),
         ]
         results = await asyncio.gather(*count_tasks)
         unclassified = results[0]
