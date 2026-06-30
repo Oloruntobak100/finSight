@@ -327,14 +327,15 @@ async def import_mono_history(
     start: str,
     end: str,
 ) -> dict[str, Any]:
-    from app.services.mono_service import sync_mono_transactions
+    from app.services.bank_providers import sync_bank_account
 
     profile = await get_or_create_profile(user_id, account_id)
     run = await _start_run(profile, "mono_import", {"start": start, "end": end})
     try:
-        imported = await sync_mono_transactions(
+        imported = await sync_bank_account(
             user_id,
             account_id,
+            "mono",
             start=start,
             end=end,
             skip_enrichment=True,

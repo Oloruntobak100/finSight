@@ -9,7 +9,8 @@ from app.models.account import (
     QuickBooksConfigResponse,
     QuickBooksExchangeRequest,
 )
-from app.services import mono_service, plaid_service, quickbooks_service, xero_service
+from app.services import quickbooks_service, xero_service
+from app.services.bank_providers import disconnect_bank_account
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -69,7 +70,7 @@ async def quickbooks_callback_legacy(
 @router.delete("/plaid/disconnect")
 async def plaid_disconnect(user_id: CurrentUser, account_id: str = Query(...)) -> dict:
     try:
-        await plaid_service.disconnect_plaid_account(user_id, account_id)
+        await disconnect_bank_account(user_id, account_id, "plaid")
         return {"status": "disconnected"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -78,7 +79,7 @@ async def plaid_disconnect(user_id: CurrentUser, account_id: str = Query(...)) -
 @router.delete("/mono/disconnect")
 async def mono_disconnect(user_id: CurrentUser, account_id: str = Query(...)) -> dict:
     try:
-        await mono_service.disconnect_mono_account(user_id, account_id)
+        await disconnect_bank_account(user_id, account_id, "mono")
         return {"status": "disconnected"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

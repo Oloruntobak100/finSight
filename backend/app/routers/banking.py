@@ -13,6 +13,12 @@ from app.models.account import (
     SandboxSimulateRequest,
 )
 from app.services import mono_service, plaid_service
+from app.services.bank_providers import (
+    disconnect_bank_account,
+    mark_recurring_if_supported,
+    should_skip_sync,
+    sync_bank_account,
+)
 from app.services.transaction_enrichment import reprocess_stored_transactions
 
 router = APIRouter(prefix="/banking", tags=["banking"])
@@ -80,14 +86,14 @@ async def sync_accounts(
     errors: list[dict[str, str]] = []
     for account in accounts_res.data or []:
         try:
-            if account["provider"] == "plaid":
-                total += await plaid_service.sync_plaid_transactions(user_id, account["id"])
-                recurring += await plaid_service.mark_recurring_transactions(user_id, account["id"])
-            elif account["provider"] == "mono":
-                if settings.skip_mono_sandbox_sync:
-                    mono_sandbox_skipped += 1
-                    continue
-                total += await mono_service.sync_mono_transactions(user_id, account["id"])
+            provider = account["provider"]
+            if provider not in ("plaid", "mono"):
+                continue
+            if should_skip_sync(provider):
+                mono_sandbox_skipped += 1
+                continue
+            total += await sync_bank_account(user_id, account["id"], provider)
+            recurring += await mark_recurring_if_supported(user_id, account["id"], provider)
         except Exception as exc:
             errors.append({"account_id": account["id"], "error": str(exc)})
 

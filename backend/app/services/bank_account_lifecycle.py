@@ -44,10 +44,11 @@ async def fetch_bank_account(user_id: str, account_id: str) -> dict[str, Any] | 
         .select("*")
         .eq("id", account_id)
         .eq("user_id", user_id)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
-    return res.data if res.data else None
+    rows = res.data or []
+    return rows[0] if rows else None
 
 
 async def find_bank_account_by_external_id(

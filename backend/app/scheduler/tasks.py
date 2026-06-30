@@ -1,13 +1,12 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from app.config import settings
 from app.database import get_supabase, run_db
 from app.services.analytics_service import calculate_metrics
 from app.services.books_service import auto_post_approved_transactions
 from app.services.fingerprint_service import recalculate_all_fingerprints
 from app.services.forecasting_service import generate_forecast
-from app.services import mono_service, plaid_service
+from app.services.bank_providers import should_skip_sync, sync_bank_account
 from app.services.notification_service import create_notification
 
 logger = logging.getLogger(__name__)
@@ -20,12 +19,12 @@ async def nightly_sync_all() -> None:
     )
     for account in accounts_res.data or []:
         try:
-            if account["provider"] == "plaid":
-                await plaid_service.sync_plaid_transactions(account["user_id"], account["id"])
-            elif account["provider"] == "mono":
-                if settings.skip_mono_sandbox_sync:
-                    continue
-                await mono_service.sync_mono_transactions(account["user_id"], account["id"])
+            provider = account.get("provider") or ""
+            if provider not in ("plaid", "mono"):
+                continue
+            if should_skip_sync(provider):
+                continue
+            await sync_bank_account(account["user_id"], account["id"], provider)
         except Exception:
             continue
 
