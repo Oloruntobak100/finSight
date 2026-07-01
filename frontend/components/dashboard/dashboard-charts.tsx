@@ -63,7 +63,9 @@ export function DashboardCharts({
               />
               <Tooltip
                 contentStyle={{ background: "#0f172a", border: "1px solid #334155", fontSize: 12 }}
-                formatter={(value: number) => formatCurrency(value, currency)}
+                formatter={(value) =>
+                  formatCurrency(typeof value === "number" ? value : Number(value) || 0, currency)
+                }
               />
               <Bar dataKey="value" fill="#3B82F6" radius={[0, 4, 4, 0]} maxBarSize={28} />
             </BarChart>
