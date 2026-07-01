@@ -191,7 +191,7 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      <DashboardCharts transactions={txns} />
+      <DashboardCharts transactions={txns} currency={displayCurrency} />
 
       <Card>
         <CardHeader>
