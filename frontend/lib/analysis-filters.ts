@@ -1,4 +1,6 @@
 import { bankSourceFilterLabel } from "@/lib/provider-labels";
+
+export type ComparePeriod = "previous_month" | "previous_year" | "previous_period";
 export type ProviderFilter = "" | "plaid" | "mono";
 export type DatePreset = "30d" | "90d" | "6m" | "ytd" | "custom";
 

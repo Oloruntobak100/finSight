@@ -5,13 +5,14 @@ import { ChevronDown, Filter, SlidersHorizontal } from "lucide-react";
 import { AccountPicker } from "@/components/analysis/account-picker";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "@/components/ui/date-input";
+import { applyDatePreset } from "@/lib/analysis-filters";
 import type {
   AnalysisFilterState,
   AnalyticsMetaAccount,
   ComparePeriod,
   DatePreset,
 } from "@/lib/analysis-filters";
-import { bankSourceFilterLabel, providerDisplayName } from "@/lib/provider-labels";
+import { bankSourceFilterLabel } from "@/lib/provider-labels";
 import { cn } from "@/lib/utils";
 
 interface AnalysisFiltersProps {
