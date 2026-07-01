@@ -101,6 +101,23 @@ interface AnalysisData {
   } | null;
   insights: Array<{ title: string; body: string; type: string }>;
   transaction_count: number;
+  data_source?: string;
+  qb_unavailable_reason?: string | null;
+  books_coverage?: {
+    posted_count?: number;
+    total_count?: number;
+    coverage_pct?: number | null;
+  };
+  bank_activity?: {
+    metrics?: { total_income: number; total_expenses: number; net_cash_flow: number };
+    top_merchants?: Array<{ merchant: string; amount: number; count: number }>;
+    bank_summary?: AnalysisData["bank_summary"];
+    transfer_activity?: AnalysisData["transfer_activity"];
+    counterparty_flows?: AnalysisData["counterparty_flows"];
+    anomalies?: AnalysisData["anomalies"];
+    recurring_detected?: AnalysisData["recurring_detected"];
+    transaction_count?: number;
+  };
 }
 
 function normalizeAnalysisData(raw: Partial<AnalysisData> & { primary_currency?: string }): AnalysisData {
@@ -138,6 +155,10 @@ function normalizeAnalysisData(raw: Partial<AnalysisData> & { primary_currency?:
     account_comparison: raw.account_comparison ?? null,
     insights: raw.insights ?? [],
     transaction_count: raw.transaction_count ?? 0,
+    data_source: raw.data_source,
+    qb_unavailable_reason: raw.qb_unavailable_reason,
+    books_coverage: raw.books_coverage,
+    bank_activity: raw.bank_activity,
   };
 }
 
@@ -209,6 +230,8 @@ export default function AnalysisPage() {
   const currency = data?.primary_currency || "USD";
   const fmt = (n: number, cur = currency) => formatCurrency(n, cur);
   const pc = data?.period_comparison ?? EMPTY_PERIOD;
+  const fromQb = data?.data_source === "quickbooks";
+  const bankAct = data?.bank_activity;
 
   const bankRows = useMemo(
     () =>
@@ -235,7 +258,7 @@ export default function AnalysisPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Analysis</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Data-driven view across accounts · {data?.transaction_count ?? 0} transactions
+            {fromQb ? "QuickBooks P&L" : "Bank cash view"} · {data?.transaction_count ?? 0} bank transactions
           </p>
         </div>
         <Button variant="outline" size="sm" loading={refreshing} onClick={() => load(true)}>
@@ -256,7 +279,19 @@ export default function AnalysisPage() {
       />
 
       {data && (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={fromQb ? "success" : "secondary"}>
+            {fromQb ? "Accounting data from QuickBooks" : "Bank cash movement (QuickBooks unavailable)"}
+          </Badge>
+          {data.books_coverage?.total_count != null && data.books_coverage.total_count > 0 && (
+            <Badge variant="secondary" className="text-xs font-normal">
+              Books posted {data.books_coverage.posted_count ?? 0}/{data.books_coverage.total_count}
+              {data.books_coverage.coverage_pct != null ? ` (${data.books_coverage.coverage_pct}%)` : ""}
+            </Badge>
+          )}
+          {data.qb_unavailable_reason && (
+            <span className="text-xs text-amber-400">{data.qb_unavailable_reason}</span>
+          )}
           {filterSummaryChips(filters, accounts).map((chip) => (
             <Badge key={chip} variant="secondary" className="text-xs font-normal">
               {chip}
@@ -276,7 +311,7 @@ export default function AnalysisPage() {
               accent="positive"
             />
             <KpiCard
-              label="Income"
+              label={fromQb ? "Revenue (QuickBooks)" : "Cash in (bank)"}
               value={fmt(data.metrics.total_income)}
               trend={
                 <>
@@ -285,7 +320,7 @@ export default function AnalysisPage() {
               }
             />
             <KpiCard
-              label="Expenses"
+              label={fromQb ? "Expenses (QuickBooks)" : "Cash out (bank)"}
               value={fmt(data.metrics.total_expenses)}
               trend={
                 <>
@@ -294,18 +329,26 @@ export default function AnalysisPage() {
               }
             />
             <KpiCard
-              label="Net cash flow"
+              label={fromQb ? "Net profit (QuickBooks)" : "Net cash flow (bank)"}
               value={fmt(data.metrics.net_cash_flow)}
               accent={data.metrics.net_cash_flow >= 0 ? "positive" : "negative"}
               sub={<span>{pc.label}</span>}
             />
           </div>
 
-          {view === "overview" && <OverviewView data={data} fmt={fmt} bankRows={bankRows} />}
-          {view === "spending" && <SpendingView data={data} fmt={fmt} />}
-          {view === "income" && <IncomeView data={data} fmt={fmt} />}
+          {fromQb && bankAct?.metrics && (
+            <p className="text-xs text-slate-500">
+              Bank reference for same filters: in {fmt(bankAct.metrics.total_income)} · out{" "}
+              {fmt(bankAct.metrics.total_expenses)} · net {fmt(bankAct.metrics.net_cash_flow)}
+            </p>
+          )}
+
+          {view === "overview" && <OverviewView data={data} fmt={fmt} bankRows={bankRows} fromQb={fromQb} />}
+          {view === "spending" && <SpendingView data={data} fmt={fmt} fromQb={fromQb} />}
+          {view === "income" && <IncomeView data={data} fmt={fmt} fromQb={fromQb} />}
+          {view === "bank" && <BankActivityView data={data} fmt={fmt} />}
           {view === "transfers" && <TransfersView data={data} fmt={fmt} />}
-          {view === "compare" && <CompareView data={data} fmt={fmt} pc={pc} />}
+          {view === "compare" && <CompareView data={data} fmt={fmt} pc={pc} fromQb={fromQb} />}
           {view === "insights" && <InsightsView data={data} fmt={fmt} />}
         </>
       )}
@@ -319,6 +362,7 @@ function OverviewView({
   data,
   fmt,
   bankRows,
+  fromQb,
 }: {
   data: AnalysisData;
   fmt: Fmt;
@@ -332,6 +376,7 @@ function OverviewView({
     currency: string;
     transaction_count: number;
   }>;
+  fromQb: boolean;
 }) {
   const bankCols: DataTableColumn<(typeof bankRows)[0]>[] = [
     { key: "bank", header: "Account", sortable: true, render: (r) => r.bank, sortValue: (r) => r.bank },
@@ -378,11 +423,14 @@ function OverviewView({
   return (
     <div className="grid gap-5 lg:grid-cols-5">
       <div className="space-y-5 lg:col-span-3">
-        <AnalyticsSection title="By account" description="Sort and search across banks">
+        <AnalyticsSection title="By account" description="Bank cash movement by connected account">
           <DataTable columns={bankCols} data={bankRows} searchKeys={["bank", "provider"]} pageSize={8} />
         </AnalyticsSection>
 
-        <AnalyticsSection title="Category breakdown" description="Where money goes">
+        <AnalyticsSection
+          title={fromQb ? "Expense accounts (QuickBooks)" : "Category breakdown"}
+          description={fromQb ? "Chart of accounts from posted books" : "Bank categories (pre-accounting)"}
+        >
           <DataTable
             columns={[
               {
@@ -416,7 +464,7 @@ function OverviewView({
       </div>
 
       <div className="space-y-5 lg:col-span-2">
-        <AnalyticsSection title="Monthly trend" description="Income vs expenses">
+        <AnalyticsSection title="Monthly trend" description={fromQb ? "QuickBooks P&L by month" : "Bank cash by month"}>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={data.monthly_trend}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
@@ -454,14 +502,64 @@ function OverviewView({
   );
 }
 
-function SpendingView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
+function BankActivityView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
+  const act = data.bank_activity;
+  const merchants = (act?.top_merchants ?? data.top_merchants).map((m, i) => ({ id: `m-${i}`, ...m }));
+  const recurring = (act?.recurring_detected ?? data.recurring_detected).map((r, i) => ({ id: `r-${i}`, ...r }));
+  const anomalies = (act?.anomalies ?? data.anomalies).map((a, i) => ({ id: `a-${i}`, ...a }));
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-2">
+      <AnalyticsSection
+        title="Top merchants"
+        description="Operational view from bank narrations (not QuickBooks P&L)"
+        className="lg:col-span-2"
+      >
+        <DataTable
+          data={merchants}
+          searchKeys={["merchant"]}
+          columns={[
+            { key: "merchant", header: "Merchant", sortable: true, render: (r) => r.merchant, sortValue: (r) => r.merchant },
+            { key: "amount", header: "Volume", align: "right", sortable: true, sortValue: (r) => r.amount, render: (r) => fmt(r.amount) },
+            { key: "count", header: "Count", align: "right", sortable: true, sortValue: (r) => r.count, render: (r) => r.count },
+          ]}
+        />
+      </AnalyticsSection>
+
+      <AnalyticsSection title="Recurring detected" description="Subscription-like bank patterns">
+        <DataTable
+          data={recurring}
+          columns={[
+            { key: "name", header: "Name", sortable: true, render: (r) => r.name, sortValue: (r) => r.name },
+            { key: "amount", header: "Amount", align: "right", sortable: true, sortValue: (r) => r.amount, render: (r) => fmt(r.amount, r.currency) },
+            { key: "source", header: "Source", render: (r) => r.source },
+          ]}
+        />
+      </AnalyticsSection>
+
+      <AnalyticsSection title="Anomalies" description="Unusual bank activity">
+        <DataTable
+          data={anomalies}
+          columns={[
+            { key: "date", header: "Date", sortable: true, render: (r) => r.date, sortValue: (r) => r.date },
+            { key: "counterparty", header: "Counterparty", render: (r) => r.counterparty },
+            { key: "amount", header: "Amount", align: "right", sortable: true, sortValue: (r) => r.amount, render: (r) => fmt(r.amount, r.currency) },
+            { key: "reason", header: "Reason", render: (r) => r.reason },
+          ]}
+        />
+      </AnalyticsSection>
+    </div>
+  );
+}
+
+function SpendingView({ data, fmt, fromQb }: { data: AnalysisData; fmt: Fmt; fromQb: boolean }) {
   const merchants = data.top_merchants.map((m, i) => ({ id: `m-${i}`, ...m }));
   const channels = (data.spending_habits?.channel_mix ?? []).map((c, i) => ({ id: `ch-${i}`, ...c }));
   const drift = (data.spending_habits?.category_drift ?? []).map((c, i) => ({ id: `d-${i}`, ...c }));
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
-      <AnalyticsSection title="Top merchants" description="Highest spend by counterparty">
+      <AnalyticsSection title="Top merchants" description="Bank counterparty spend (see Bank activity tab)">
         <DataTable
           data={merchants}
           searchKeys={["merchant"]}
@@ -505,7 +603,11 @@ function SpendingView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
         </ResponsiveContainer>
       </AnalyticsSection>
 
-      <AnalyticsSection title="Category drift (MoM)" description="Categories changing month over month" className="lg:col-span-2">
+      <AnalyticsSection
+        title="Category drift (MoM)"
+        description={fromQb ? "QuickBooks expense accounts" : "Bank categories changing month over month"}
+        className="lg:col-span-2"
+      >
         <DataTable
           data={drift}
           columns={[
@@ -527,7 +629,7 @@ function SpendingView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
   );
 }
 
-function IncomeView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
+function IncomeView({ data, fmt, fromQb }: { data: AnalysisData; fmt: Fmt; fromQb: boolean }) {
   const runway = data.cash_runway.map((r, i) => ({ id: `r-${i}`, ...r }));
   const salary = (data.income_insights?.salary_candidates ?? []).map((s, i) => ({ id: `s-${i}`, ...s }));
   const yearly = data.yearly_trend.map((y, i) => ({ id: `y-${i}`, ...y }));
@@ -557,7 +659,7 @@ function IncomeView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
         />
       </AnalyticsSection>
 
-      <AnalyticsSection title="Yearly trend" className="lg:col-span-2">
+      <AnalyticsSection title="Yearly trend" description={fromQb ? "QuickBooks P&L by year" : "Bank cash by year"} className="lg:col-span-2">
         <DataTable
           data={yearly}
           columns={[
@@ -617,21 +719,23 @@ function CompareView({
   data,
   fmt,
   pc,
+  fromQb,
 }: {
   data: AnalysisData;
   fmt: Fmt;
   pc: typeof EMPTY_PERIOD;
+  fromQb: boolean;
 }) {
   const periodRows = [
-    { id: "income", metric: "Income", current: pc.current.income, previous: pc.previous.income, change: pc.income_change_pct },
-    { id: "expenses", metric: "Expenses", current: pc.current.expenses, previous: pc.previous.expenses, change: pc.expense_change_pct },
-    { id: "net", metric: "Net", current: pc.current.net, previous: pc.previous.net, change: pc.net_change_pct },
-    { id: "xfer", metric: "Transfers", current: pc.current.transfer_volume, previous: pc.previous.transfer_volume, change: pc.transfer_volume_change_pct },
+    { id: "income", metric: fromQb ? "Revenue" : "Cash in", current: pc.current.income, previous: pc.previous.income, change: pc.income_change_pct },
+    { id: "expenses", metric: fromQb ? "Expenses" : "Cash out", current: pc.current.expenses, previous: pc.previous.expenses, change: pc.expense_change_pct },
+    { id: "net", metric: fromQb ? "Net profit" : "Net cash", current: pc.current.net, previous: pc.previous.net, change: pc.net_change_pct },
+    { id: "xfer", metric: "Transfers (bank)", current: pc.current.transfer_volume, previous: pc.previous.transfer_volume, change: pc.transfer_volume_change_pct },
   ];
 
   return (
     <div className="space-y-5">
-      <AnalyticsSection title={pc.label} description="Period-over-period comparison">
+      <AnalyticsSection title={pc.label} description={fromQb ? "QuickBooks P&L period comparison" : "Bank cash comparison"}>
         <DataTable
           data={periodRows}
           columns={[

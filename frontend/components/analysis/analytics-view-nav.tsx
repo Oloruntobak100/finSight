@@ -8,6 +8,7 @@ const VIEWS = [
   { id: "overview", label: "Overview" },
   { id: "spending", label: "Spending" },
   { id: "income", label: "Income" },
+  { id: "bank", label: "Bank activity" },
   { id: "transfers", label: "Transfers" },
   { id: "compare", label: "Compare" },
   { id: "insights", label: "Insights" },

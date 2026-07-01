@@ -25,6 +25,7 @@ interface Forecast {
   confidence_low?: number | null;
   confidence_high?: number | null;
   currency?: string;
+  data_source?: string;
 }
 
 export default function ForecastPage() {
@@ -80,6 +81,7 @@ export default function ForecastPage() {
   }
 
   const currency = forecasts[0]?.currency || "USD";
+  const forecastSource = forecasts[0]?.data_source === "quickbooks" ? "QuickBooks P&L history" : "Bank transactions";
   const chartData = forecasts.map((f) => ({
     name: `${f.horizon_days}d`,
     balance: f.projected_balance,
@@ -91,7 +93,9 @@ export default function ForecastPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white">Forecast</h1>
-        <p className="text-slate-400">30 / 60 / 90-day projections (Holt-Winters)</p>
+        <p className="text-slate-400">
+          30 / 60 / 90-day projections · {forecastSource}
+        </p>
       </div>
 
       <AnalysisFiltersBar

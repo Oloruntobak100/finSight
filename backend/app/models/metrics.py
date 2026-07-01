@@ -5,8 +5,8 @@ from pydantic import BaseModel, Field
 
 
 class FinancialMetricsResponse(BaseModel):
-    id: str
-    user_id: str
+    id: Optional[str] = None
+    user_id: Optional[str] = None
     period_start: date
     period_end: date
     total_income: float
@@ -15,6 +15,13 @@ class FinancialMetricsResponse(BaseModel):
     savings_rate: Optional[float] = None
     burn_rate: Optional[float] = None
     calculated_at: Optional[str] = None
+    data_source: str = "quickbooks"
+    books_coverage_pct: Optional[float] = None
+    books_posted_count: Optional[int] = None
+    books_total_count: Optional[int] = None
+    cash_in: Optional[float] = None
+    cash_out: Optional[float] = None
+    qb_unavailable_reason: Optional[str] = None
 
 
 class ForecastResponse(BaseModel):
@@ -163,3 +170,8 @@ class FinancialAnalysisResponse(BaseModel):
     account_comparison: dict | None = None
     insights: list[InsightBullet] = Field(default_factory=list)
     transaction_count: int
+    data_source: str = "bank"
+    qb_unavailable_reason: Optional[str] = None
+    books_coverage: dict = Field(default_factory=dict)
+    bank_activity: dict = Field(default_factory=dict)
+    qb_reports: dict = Field(default_factory=dict)

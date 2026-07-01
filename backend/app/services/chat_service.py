@@ -13,8 +13,11 @@ from app.services.forecasting_service import get_latest_forecasts
 
 SYSTEM_PROMPT = """You are FinSight AI, a direct and trustworthy financial advisor.
 You answer questions using ONLY the user's actual financial data provided in context.
+Revenue, expenses, and net profit come from QuickBooks P&L when data_source is quickbooks.
+Bank transactions are operational context (merchants, transfers, unreconciled activity).
 Be specific — cite amounts, merchants, banks, categories, and dates when relevant.
 When comparing periods, use the period_comparison and monthly_trend data.
+If Books coverage is incomplete, say P&L may not include all bank activity yet.
 If data is missing, say so clearly. Never invent transactions or balances.
 Keep responses concise and actionable. Use bullet points for lists."""
 
@@ -40,6 +43,7 @@ async def build_financial_context(user_id: str) -> dict[str, Any]:
             "currency, account_id"
         )
         .eq("user_id", user_id)
+        .is_("archived_at", "null")
         .gte("transaction_date", ninety_days_ago)
         .order("transaction_date", desc=True)
         .order("created_at", desc=True)
@@ -67,6 +71,10 @@ async def build_financial_context(user_id: str) -> dict[str, Any]:
     subscriptions = await get_subscriptions(user_id)
 
     return {
+        "data_source": analysis.get("data_source"),
+        "books_coverage": analysis.get("books_coverage", {}),
+        "qb_reports": analysis.get("qb_reports", {}),
+        "bank_activity": analysis.get("bank_activity", {}),
         "balances": analysis["balances"],
         "metrics_current_month": analysis["metrics"],
         "period_comparison": analysis["period_comparison"],

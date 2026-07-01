@@ -13,6 +13,15 @@ interface Metrics {
   total_expenses: number;
   net_cash_flow: number;
   savings_rate: number | null;
+  data_source?: string;
+  books_coverage_pct?: number | null;
+  books_posted_count?: number | null;
+  books_total_count?: number | null;
+  cash_in?: number | null;
+  cash_out?: number | null;
+  qb_unavailable_reason?: string | null;
+  period_start?: string;
+  period_end?: string;
 }
 
 interface Balances {
@@ -38,6 +47,16 @@ interface Transaction {
   currency?: string;
 }
 
+function periodLabel(start?: string, end?: string): string {
+  if (!start || !end) return "This month";
+  const s = new Date(start);
+  const e = new Date(end);
+  if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
+    return s.toLocaleString(undefined, { month: "long", year: "numeric" });
+  }
+  return `${start} – ${end}`;
+}
+
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [balances, setBalances] = useState<Balances | null>(null);
@@ -60,22 +79,29 @@ export default function DashboardPage() {
   const displayCurrency =
     balances?.primary_currency || balances?.accounts[0]?.currency || "NGN";
 
+  const fromQb = metrics?.data_source === "quickbooks";
+  const period = periodLabel(metrics?.period_start, metrics?.period_end);
+
   const kpis = [
     {
       label: "Total Balance",
+      sub: "Live bank balance",
       value: balances ? formatCurrency(balances.total_balance, displayCurrency) : "—",
       highlight: true,
     },
     {
-      label: "Monthly Income",
+      label: fromQb ? "Revenue (QuickBooks)" : "Cash in (bank)",
+      sub: period,
       value: metrics ? formatCurrency(metrics.total_income, displayCurrency) : "—",
     },
     {
-      label: "Monthly Expenses",
+      label: fromQb ? "Expenses (QuickBooks)" : "Cash out (bank)",
+      sub: period,
       value: metrics ? formatCurrency(metrics.total_expenses, displayCurrency) : "—",
     },
     {
-      label: "Net Cash Flow",
+      label: fromQb ? "Net profit (QuickBooks)" : "Net cash flow (bank)",
+      sub: period,
       value: metrics ? formatCurrency(metrics.net_cash_flow, displayCurrency) : "—",
     },
   ];
@@ -87,6 +113,23 @@ export default function DashboardPage() {
         <p className="text-sm text-slate-500">Financial overview</p>
       </div>
 
+      {!loading && metrics && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={fromQb ? "success" : "secondary"}>
+            {fromQb ? "P&L from QuickBooks" : "Bank cash view"}
+          </Badge>
+          {metrics.books_total_count != null && metrics.books_total_count > 0 && (
+            <Badge variant="secondary" className="text-xs">
+              Books posted {metrics.books_posted_count ?? 0}/{metrics.books_total_count}
+              {metrics.books_coverage_pct != null ? ` (${metrics.books_coverage_pct}%)` : ""}
+            </Badge>
+          )}
+          {metrics.qb_unavailable_reason && (
+            <span className="text-xs text-amber-400">{metrics.qb_unavailable_reason}</span>
+          )}
+        </div>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {kpis.map((kpi) => (
           <Card key={kpi.label}>
@@ -94,13 +137,18 @@ export default function DashboardPage() {
             {loading ? (
               <Skeleton className="mt-2 h-8 w-28" />
             ) : (
-              <p
-                className={`mt-2 text-2xl font-bold ${
-                  kpi.highlight ? "text-emerald-400" : "text-white"
-                }`}
-              >
-                {kpi.value}
-              </p>
+              <>
+                <p
+                  className={`mt-2 text-2xl font-bold ${
+                    kpi.highlight ? "text-emerald-400" : "text-white"
+                  }`}
+                >
+                  {kpi.value}
+                </p>
+                {kpi.sub && (
+                  <p className="mt-1 text-xs text-slate-500">{kpi.sub}</p>
+                )}
+              </>
             )}
             {kpi.highlight && balances?.as_of && !loading && (
               <p className="mt-1 text-xs text-slate-500">
@@ -110,6 +158,13 @@ export default function DashboardPage() {
           </Card>
         ))}
       </div>
+
+      {!loading && fromQb && metrics?.cash_in != null && metrics?.cash_out != null && (
+        <p className="text-xs text-slate-500">
+          Bank cash movement this month (reference): in {formatCurrency(metrics.cash_in, displayCurrency)} · out{" "}
+          {formatCurrency(metrics.cash_out, displayCurrency)}
+        </p>
+      )}
 
       {balances && balances.accounts.length > 0 && (
         <Card>

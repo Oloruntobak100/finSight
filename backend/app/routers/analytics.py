@@ -147,12 +147,13 @@ async def get_analysis(
     compare_account_a: str | None = None,
     compare_account_b: str | None = None,
     compare_period: str = "previous_month",
+    refresh_qb: bool = Query(False),
 ) -> FinancialAnalysisResponse:
     filters = _filters_from_query(
         date_from, date_to, provider, account_id, include_transfers,
         compare_account_a, compare_account_b, compare_period,
     )
-    data = await get_financial_analysis(user_id, filters, refresh_balances=True)
+    data = await get_financial_analysis(user_id, filters, refresh_balances=True, refresh_qb=refresh_qb)
     return FinancialAnalysisResponse(**data)
 
 

@@ -75,20 +75,34 @@ async def get_comprehensive_report(
     )[:15]
 
     income_txns = [t for t in month_transactions if t["type"] == "credit"]
-    total_income = sum(t["amount"] for t in income_txns)
-    total_expenses = sum(t["amount"] for t in month_transactions if t["type"] == "debit")
+    metrics = analysis.get("metrics", {})
+    total_income = float(metrics.get("total_income") or 0)
+    total_expenses = float(metrics.get("total_expenses") or 0)
+    net_profit = float(metrics.get("net_cash_flow") or 0)
+    data_source = analysis.get("data_source", "bank")
+    coverage = analysis.get("books_coverage") or {}
+    bank_activity = analysis.get("bank_activity") or {}
 
     recurring_monthly = subscriptions.get("total_monthly", 0)
-    savings_rate = analysis["metrics"].get("savings_rate")
+    savings_rate = metrics.get("savings_rate")
     pc = analysis.get("period_comparison", {})
 
+    source_label = "QuickBooks P&L" if data_source == "quickbooks" else "bank cash movement"
     executive_bullets = [
         f"Total balance ({currency}): {sym}{analysis['balances']['total_balance']:,.2f}",
-        f"Period income: {sym}{total_income:,.2f}, expenses: {sym}{total_expenses:,.2f}",
-        f"Net cash flow: {sym}{analysis['metrics']['net_cash_flow']:,.2f}",
-        f"Transactions in period: {len(month_transactions)}",
-        f"Recurring subscriptions: {sym}{recurring_monthly:,.2f}/month ({len(subscriptions.get('items', []))} detected)",
+        f"Revenue ({source_label}): {sym}{total_income:,.2f}, expenses: {sym}{total_expenses:,.2f}",
+        f"Net profit: {sym}{net_profit:,.2f}",
+        f"Bank transactions in period: {len(month_transactions)}",
     ]
+    if coverage.get("total_count"):
+        executive_bullets.append(
+            f"Books coverage: {coverage.get('posted_count', 0)}/{coverage['total_count']} posted "
+            f"({coverage.get('coverage_pct', 0):.0f}%)"
+        )
+    executive_bullets.append(
+        f"Recurring subscriptions (bank-detected): {sym}{recurring_monthly:,.2f}/month "
+        f"({len(subscriptions.get('items', []))} detected)"
+    )
     if savings_rate is not None:
         executive_bullets.append(f"Savings rate: {savings_rate:.1f}%")
     if pc.get("expense_change_pct") is not None:
@@ -114,10 +128,16 @@ async def get_comprehensive_report(
             "total_balance": analysis["balances"]["total_balance"],
             "monthly_income": total_income,
             "monthly_expenses": total_expenses,
-            "net_cash_flow": analysis["metrics"]["net_cash_flow"],
+            "net_cash_flow": net_profit,
             "savings_rate": savings_rate,
             "transaction_count": len(month_transactions),
+            "data_source": data_source,
+            "books_coverage": coverage,
         },
+        "data_source": data_source,
+        "books_coverage": coverage,
+        "bank_activity": bank_activity,
+        "qb_reports": analysis.get("qb_reports", {}),
         "balances": analysis["balances"],
         "monthly_trend": analysis["monthly_trend"],
         "yearly_trend": analysis.get("yearly_trend", []),

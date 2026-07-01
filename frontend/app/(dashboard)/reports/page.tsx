@@ -36,7 +36,15 @@ interface ReportData {
     net_cash_flow: number;
     savings_rate: number | null;
     transaction_count: number;
+    data_source?: string;
+    books_coverage?: {
+      posted_count?: number;
+      total_count?: number;
+      coverage_pct?: number | null;
+    };
   };
+  data_source?: string;
+  books_coverage?: ReportData["executive_summary"]["books_coverage"];
   monthly_trend: Array<{ month: string; income: number; expenses: number; net: number }>;
   yearly_trend?: Array<{ year: string; income: number; expenses: number; net: number }>;
   category_spending: Array<{ category: string; amount: number; pct: number }>;
@@ -301,6 +309,7 @@ export default function ReportsPage() {
   const currency = report.primary_currency || "USD";
   const fmt = (n: number, c?: string) => formatCurrency(n, c || currency);
   const chips = filterSummaryChips(filters, accounts);
+  const fromQb = (report.data_source || executive_summary.data_source) === "quickbooks";
 
   return (
     <div className="page-enter space-y-6">
@@ -329,6 +338,16 @@ export default function ReportsPage() {
       />
 
       <div className="flex flex-wrap gap-2">
+        {fromQb && (
+          <Badge variant="success" className="text-xs">
+            P&amp;L from QuickBooks
+          </Badge>
+        )}
+        {report.books_coverage?.total_count != null && report.books_coverage.total_count > 0 && (
+          <Badge variant="secondary" className="text-xs">
+            Books posted {report.books_coverage.posted_count ?? 0}/{report.books_coverage.total_count}
+          </Badge>
+        )}
         {chips.map((chip) => (
           <Badge key={chip} variant="secondary" className="text-xs">
             {chip}
@@ -355,10 +374,10 @@ export default function ReportsPage() {
         <div className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <KpiCard label="Total balance" value={fmt(executive_summary.total_balance)} accent="positive" />
-            <KpiCard label="Period income" value={fmt(executive_summary.monthly_income)} />
-            <KpiCard label="Period expenses" value={fmt(executive_summary.monthly_expenses)} />
+            <KpiCard label={fromQb ? "Revenue (QuickBooks)" : "Period cash in"} value={fmt(executive_summary.monthly_income)} />
+            <KpiCard label={fromQb ? "Expenses (QuickBooks)" : "Period cash out"} value={fmt(executive_summary.monthly_expenses)} />
             <KpiCard
-              label="Net cash flow"
+              label={fromQb ? "Net profit (QuickBooks)" : "Net cash flow"}
               value={fmt(executive_summary.net_cash_flow)}
               accent={executive_summary.net_cash_flow >= 0 ? "positive" : "negative"}
             />
