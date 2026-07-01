@@ -762,37 +762,29 @@ async def maybe_enforce_synthetic_wins(
 
 
 async def transaction_stats(user_id: str, account_id: str) -> dict[str, int]:
+    """Count active rows for one account in a single query (avoids stale HTTP/2 after bulk inserts)."""
     sb = get_supabase()
-
-    def _count(**filters: Any) -> Any:
-        q = (
-            sb.table("transactions")
-            .select("id", count="exact")
-            .eq("user_id", user_id)
-            .eq("account_id", account_id)
-            .is_("archived_at", "null")
-        )
-        for key, val in filters.items():
-            q = q.eq(key, val)
-        return q.execute()
-
-    total_res = await run_db(lambda: _count())
-    syn_res = await run_db(lambda: _count(is_synthetic=True))
-    mono_res = await run_db(
+    res = await run_db(
         lambda: sb.table("transactions")
-        .select("id", count="exact")
+        .select("is_synthetic, source_provider")
         .eq("user_id", user_id)
         .eq("account_id", account_id)
-        .eq("source_provider", "mono")
-        .eq("is_synthetic", False)
         .is_("archived_at", "null")
         .execute()
     )
+    rows = res.data or []
+    synthetic = sum(1 for row in rows if row.get("is_synthetic"))
+    mono_imported = sum(
+        1
+        for row in rows
+        if row.get("source_provider") == "mono" and not row.get("is_synthetic")
+    )
+    total = len(rows)
     return {
-        "total": total_res.count or 0,
-        "synthetic": syn_res.count or 0,
-        "mono_imported": mono_res.count or 0,
-        "non_synthetic": (total_res.count or 0) - (syn_res.count or 0),
+        "total": total,
+        "synthetic": synthetic,
+        "mono_imported": mono_imported,
+        "non_synthetic": total - synthetic,
     }
 
 
@@ -905,7 +897,18 @@ async def get_account_detail(user_id: str, account_id: str) -> dict[str, Any]:
         .limit(20)
         .execute()
     )
-    return {"profile": profile, "runs": runs_res.data or [], "presets": PERSONA_PRESETS, "stats": await transaction_stats(user_id, account_id)}
+    stats: dict[str, int] | None = None
+    try:
+        stats = await transaction_stats(user_id, account_id)
+    except Exception as exc:
+        logger.warning("transaction_stats failed for account %s: %s", account_id, exc)
+
+    return {
+        "profile": profile,
+        "runs": runs_res.data or [],
+        "presets": PERSONA_PRESETS,
+        "stats": stats,
+    }
 
 
 async def list_runs(user_id: str, account_id: str, page: int = 1, limit: int = 20) -> dict[str, Any]:

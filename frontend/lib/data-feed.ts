@@ -170,6 +170,25 @@ export function datePresetMonths(months: number): { start: string; end: string }
   };
 }
 
+/** First and last day of a calendar month (defaults to current month). */
+export function datePresetCalendarMonth(year?: number, month?: number): { start: string; end: string } {
+  const now = new Date();
+  const y = year ?? now.getFullYear();
+  const m = month ?? now.getMonth();
+  const start = new Date(y, m, 1);
+  const end = new Date(y, m + 1, 0);
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
+}
+
+/** January (or first month) of a calendar year — good default for a clean yearly restart. */
+export function datePresetFirstMonthOfYear(year?: number): { start: string; end: string } {
+  const y = year ?? new Date().getFullYear();
+  return datePresetCalendarMonth(y, 0);
+}
+
 export const PERSONA_LABELS: Record<PersonaType, string> = {
   individual: "Individual",
   freelancer: "Freelancer",

@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, apiFetch } from "@/lib/api";
 import {
   datePresetMonths,
+  datePresetFirstMonthOfYear,
   fetchAccountDetail,
   fillHistory,
   importMonoHistory,
@@ -55,7 +56,7 @@ export default function DataFeedAccountPage() {
   const [histEnd, setHistEnd] = useState("");
   const [fillStart, setFillStart] = useState("");
   const [fillEnd, setFillEnd] = useState("");
-  const [fillCount, setFillCount] = useState("");
+  const [fillCount, setFillCount] = useState("20");
   const [isMonoSandbox, setIsMonoSandbox] = useState(true);
   const [showMonoImport, setShowMonoImport] = useState(false);
 
@@ -88,7 +89,7 @@ export default function DataFeedAccountPage() {
       if (cfg.remark_rate != null) setRemarkRate(cfg.remark_rate);
       if (p.historical_start) setHistStart(String(p.historical_start).slice(0, 10));
       if (p.historical_end) setHistEnd(String(p.historical_end).slice(0, 10));
-      const preset = datePresetMonths(6);
+      const preset = datePresetFirstMonthOfYear();
       setFillStart(preset.start);
       setFillEnd(preset.end);
     } catch (err) {
@@ -183,7 +184,14 @@ export default function DataFeedAccountPage() {
           ? `Generated ${res.created} synthetic transaction(s). Auto-classify is running in the background — check Books in a minute. Open Transactions and filter by Synthetic.`
           : `Generated ${res.created} synthetic transaction(s). Open Transactions and filter by Synthetic to view them.`
       );
-      await load();
+      try {
+        await load();
+      } catch {
+        setMessage(
+          (prev) =>
+            `${prev ?? ""} Page stats could not refresh — use Retry or open Transactions to confirm.`.trim()
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Fill failed");
     } finally {
@@ -517,9 +525,9 @@ export default function DataFeedAccountPage() {
               <DateInput value={fillEnd} onChange={(e) => setFillEnd(e.target.value)} />
             </div>
             <div>
-              <label className="mb-1.5 block text-xs text-slate-400">Count (optional)</label>
+              <label className="mb-1.5 block text-xs text-slate-400">Count (recommended: 20 for testing)</label>
               <Input
-                placeholder="Auto"
+                placeholder="20"
                 value={fillCount}
                 onChange={(e) => setFillCount(e.target.value)}
               />
@@ -533,8 +541,8 @@ export default function DataFeedAccountPage() {
             Fill history
           </Button>
           <p className="text-xs text-slate-500">
-            Saves your persona, then generates transactions on the server. Large ranges can take up to a minute — keep
-            this page open until you see a success message.
+            Saves your persona, then generates transactions on the server. Defaults to the first month of this year
+            with count 20 — leave count blank only if you want hundreds of rows. Large fills can take up to a minute.
           </p>
         </div>
       </Card>
