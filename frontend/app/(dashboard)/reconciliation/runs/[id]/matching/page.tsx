@@ -76,7 +76,7 @@ function MatchPairedCard({
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 p-3">
-          <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">Bank (Mono)</p>
+          <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">Bank feed</p>
           <TransactionDateStack transactionDate={monoDate} unposted={!item.posted_date} />
           <p className="mt-2 text-lg font-semibold tabular-nums text-white">
             {formatCurrency(item.amount, item.currency)}
@@ -215,7 +215,7 @@ export default function MatchingWorkspacePage() {
       <div>
         <h1 className="text-xl font-bold text-white">Transaction Matching</h1>
         <p className="text-sm text-slate-500">
-          {run?.period_start} → {run?.period_end} · Mono vs QuickBooks bank register
+          {run?.period_start} → {run?.period_end} · Bank vs QuickBooks register
         </p>
       </div>
 

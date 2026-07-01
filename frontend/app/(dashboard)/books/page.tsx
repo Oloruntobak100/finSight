@@ -1108,7 +1108,7 @@ function BooksQueueContent() {
           </CardHeader>
           <div className="space-y-4 px-6 pb-6">
             <p className="text-sm text-slate-400">
-              Books shows transactions from your linked bank only. Connect Mono or Plaid to import live debits, then map
+              Books shows transactions from your linked bank only. Connect a bank account to import live activity, then map
               accounts and approve for QuickBooks.
             </p>
             <Button asChild>

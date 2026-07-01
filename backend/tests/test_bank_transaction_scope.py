@@ -145,15 +145,52 @@ async def test_get_summary_aggregates_exact_counts():
 @pytest.mark.asyncio
 async def test_disconnect_mono_archives_and_soft_disconnects():
     with patch(
-        "app.services.mono_service.archive_transactions_for_account",
+        "app.services.bank_transaction_scope.archive_transactions_for_account",
         AsyncMock(return_value=42),
     ) as archive_acct, patch(
+        "app.services.bank_transaction_scope.archive_non_synthetic_transactions_for_account",
+        AsyncMock(return_value=0),
+    ) as archive_imports, patch(
+        "app.services.synthetic_feed_service.pause_live_feed_disconnect",
+        AsyncMock(),
+    ) as pause_feed, patch(
         "app.services.mono_service.soft_disconnect_bank_account",
         AsyncMock(),
-    ) as soft_disconnect:
+    ) as soft_disconnect, patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=False,
+    ):
         from app.services.mono_service import disconnect_mono_account
 
         await disconnect_mono_account("user-1", "acct-1")
 
     archive_acct.assert_awaited_once_with("user-1", "acct-1")
+    archive_imports.assert_not_called()
+    pause_feed.assert_awaited_once_with("user-1", "acct-1")
     soft_disconnect.assert_awaited_once_with("user-1", "acct-1", "mono")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_mono_synthetic_mode_archives_imports_only():
+    with patch(
+        "app.services.bank_transaction_scope.archive_transactions_for_account",
+        AsyncMock(return_value=0),
+    ) as archive_acct, patch(
+        "app.services.bank_transaction_scope.archive_non_synthetic_transactions_for_account",
+        AsyncMock(return_value=3),
+    ) as archive_imports, patch(
+        "app.services.synthetic_feed_service.pause_live_feed_disconnect",
+        AsyncMock(),
+    ), patch(
+        "app.services.mono_service.soft_disconnect_bank_account",
+        AsyncMock(),
+    ), patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=True,
+    ):
+        from app.services.mono_service import disconnect_mono_account
+
+        await disconnect_mono_account("user-1", "acct-1")
+
+    archive_imports.assert_awaited_once_with("user-1", "acct-1")
+    archive_acct.assert_not_called()

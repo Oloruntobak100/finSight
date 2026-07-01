@@ -62,8 +62,8 @@ export default function DataFeedPage() {
       <div className="page-enter space-y-4">
         <h1 className="text-2xl font-bold text-white">Data Feed</h1>
         <p className="text-slate-400">
-          Synthetic data feed is not enabled. Use Mono sandbox keys or set{" "}
-          <code className="text-slate-300">ENABLE_SYNTHETIC_FEED=true</code> in the backend.
+          Synthetic data feed is not enabled. Enable it in server settings (
+          <code className="text-slate-300">ENABLE_SYNTHETIC_FEED=true</code>).
         </p>
       </div>
     );
@@ -78,12 +78,12 @@ export default function DataFeedPage() {
           <Badge className="border-amber-500/30 bg-amber-950/40 text-amber-300">Testing</Badge>
         </div>
         <p className="mt-1 text-slate-400">
-          Configure a persona and generate realistic synthetic transactions. Mono sandbox import is optional.
+          Configure a persona and generate realistic synthetic transactions. Live bank import is optional.
         </p>
       </div>
 
       <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
-        Synthetic feed assists Mono sandbox testing. Generated rows are tagged <strong>Synthetic</strong> in
+        Synthetic feed assists sandbox testing. Generated rows are tagged <strong>Synthetic</strong> in
         Transactions.
       </div>
 
@@ -95,12 +95,12 @@ export default function DataFeedPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Mono banks</CardTitle>
-          <CardDescription>Select a connected bank to configure import, persona, and live feed</CardDescription>
+          <CardTitle>Connected banks</CardTitle>
+          <CardDescription>Select a bank to configure persona, history fill, and live feed</CardDescription>
         </CardHeader>
         {accounts.length === 0 ? (
           <p className="px-6 pb-6 text-slate-500">
-            No Mono banks connected.{" "}
+            No banks connected.{" "}
             <Link href="/accounts" className="text-blue-400 hover:underline">
               Connect one in Accounts
             </Link>

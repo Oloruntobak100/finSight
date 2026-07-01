@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from app.config import settings
 from app.database import get_supabase, run_db
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,28 @@ async def count_archived_bank_transactions(user_id: str, provider: str | None = 
     return res.count or 0
 
 
+def _mono_synthetic_wins() -> bool:
+    return settings.synthetic_feed_allowed
+
+
+async def _restore_bank_metadata_only(
+    user_id: str,
+    account_id: str,
+    provider: str,
+    external_account_id: str | None,
+) -> dict[str, Any] | None:
+    """Reconnect mappings/reconciliation; restore synthetic rows; resume live drip."""
+    from app.services.bank_transaction_scope import unarchive_synthetic_transactions_for_account
+    from app.services.synthetic_feed_service import resume_live_feed_on_reconnect
+
+    await unarchive_synthetic_transactions_for_account(user_id, account_id)
+    await migrate_bank_mapping_alias(user_id, account_id, external_account_id)
+    await relink_open_reconciliation(user_id, account_id, provider)
+    if provider == "mono":
+        return await resume_live_feed_on_reconnect(user_id, account_id)
+    return None
+
+
 async def maybe_auto_restore_bank_data(
     user_id: str,
     bank_accounts: list[dict[str, Any]],
@@ -216,6 +239,8 @@ async def maybe_auto_restore_bank_data(
     visible_count: int,
 ) -> dict[str, int] | None:
     """Restore a small batch of archived bank rows when an account shows zero visible txns."""
+    if _mono_synthetic_wins():
+        return None
     if visible_count > 0 or not bank_accounts:
         return None
     totals: dict[str, int] = {
@@ -443,9 +468,14 @@ async def connect_or_reactivate_bank_account(
             .eq("user_id", user_id)
             .execute()
         )
-        await restore_bank_account_continuity(
-            user_id, account_id, provider, external_account_id
-        )
+        if provider == "mono" and _mono_synthetic_wins():
+            await _restore_bank_metadata_only(
+                user_id, account_id, provider, external_account_id
+            )
+        else:
+            await restore_bank_account_continuity(
+                user_id, account_id, provider, external_account_id
+            )
         res = await run_db(
             lambda: sb.table("connected_accounts")
             .select("*")
@@ -453,6 +483,10 @@ async def connect_or_reactivate_bank_account(
             .single()
             .execute()
         )
+        if provider == "mono" and _mono_synthetic_wins():
+            from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
+
+            await maybe_enforce_synthetic_wins(user_id, account_id)
         return res.data, True
 
     row: dict[str, Any] = {
@@ -468,9 +502,18 @@ async def connect_or_reactivate_bank_account(
         row.update(extra_fields)
     result = await run_db(lambda: sb.table("connected_accounts").insert(row).execute())
     account = result.data[0]
-    await restore_bank_account_continuity(
-        user_id, account["id"], provider, external_account_id
-    )
+    if provider == "mono" and _mono_synthetic_wins():
+        await _restore_bank_metadata_only(
+            user_id, account["id"], provider, external_account_id
+        )
+    else:
+        await restore_bank_account_continuity(
+            user_id, account["id"], provider, external_account_id
+        )
+    if provider == "mono" and _mono_synthetic_wins():
+        from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
+
+        await maybe_enforce_synthetic_wins(user_id, account["id"])
     return account, False
 
 
@@ -501,9 +544,17 @@ async def restore_bank_account_continuity(
         relinked = await relink_open_reconciliation(user_id, account_id, provider)
     else:
         relinked = 0
-    return {
+    feed_resume: dict[str, Any] | None = None
+    if max_rows is None and provider == "mono":
+        from app.services.synthetic_feed_service import resume_live_feed_on_reconnect
+
+        feed_resume = await resume_live_feed_on_reconnect(user_id, account_id)
+    result = {
         "unarchived": unarchived,
         "orphaned_unarchived": orphaned,
         "legacy_relinked": legacy,
         "reconciliation_runs_relinked": relinked,
     }
+    if feed_resume:
+        result["live_feed_resumed"] = feed_resume.get("resumed", False)
+    return result

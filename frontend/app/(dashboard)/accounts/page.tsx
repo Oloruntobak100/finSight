@@ -14,6 +14,7 @@ import { SimulateTransactionDialog } from "@/components/accounts/simulate-transa
 import { QuickBooksConnectButton } from "@/components/accounts/quickbooks-connect-button";
 import { useMonoConnect } from "@/hooks/use-mono-connect";
 import { apiFetch, ApiError, BANKING_TIMEOUT_MS } from "@/lib/api";
+import { bankConnectCardDescription, bankConnectCardTitle, providerDisplayName } from "@/lib/provider-labels";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -150,7 +151,7 @@ function AccountsPageContent() {
       });
       setLinkToken(data.link_token);
     } catch {
-      setError("Could not open Plaid. Please try again.");
+      setError("Could not open bank connection. Please try again.");
       setConnectingPlaid(false);
     }
   }
@@ -182,7 +183,7 @@ function AccountsPageContent() {
 
         setSyncMessage(
           provider === "mono" && isMonoSandbox
-            ? "Bank connected. Mono sandbox import is skipped automatically — use Data Feed → Fill history for test data."
+            ? "Bank connected. Test import is skipped automatically — use Data Feed → Fill history for sample data."
             : provider === "mono"
               ? "African bank connected successfully."
               : "Bank connected successfully."
@@ -219,7 +220,7 @@ function AccountsPageContent() {
         setConnectionFlow(null);
         linkingInProgressRef.current = false;
         setConnectingPlaid(false);
-        setError("Connected to Plaid but setup failed. Try Sync All.");
+        setError("Bank connected but setup failed. Try Sync All.");
       } finally {
         setLinkToken(null);
       }
@@ -253,7 +254,7 @@ function AccountsPageContent() {
         setConnectionFlow(null);
         linkingInProgressRef.current = false;
         setConnectingMono(false);
-        setError("Connected to Mono but setup failed. Try Sync All.");
+        setError("Bank connected but setup failed. Try Sync All.");
       }
     },
     [finalizeBankConnection]
@@ -272,11 +273,11 @@ function AccountsPageContent() {
 
   function startMono() {
     if (!monoConfigured) {
-      setError("Mono is not configured. Add MONO_PUBLIC_KEY and MONO_SECRET_KEY to .env.");
+      setError("Bank connection is not available. Contact support if this persists.");
       return;
     }
     if (!monoReady) {
-      setError("Mono widget is still loading. Please try again.");
+      setError("Bank connection is still loading. Please try again.");
       return;
     }
     setConnectingMono(true);
@@ -312,8 +313,8 @@ function AccountsPageContent() {
         if (result.mono_sandbox_sync_skipped) {
           setSyncMessage(
             result.synced_transactions > 0
-              ? `Synced ${result.synced_transactions} transaction(s). Mono sandbox import skipped — use Data Feed → Fill history.`
-              : "Mono sandbox import skipped — use Data Feed → Fill history for test data."
+              ? `Synced ${result.synced_transactions} transaction(s). Test import skipped — use Data Feed → Fill history.`
+              : "Test import skipped — use Data Feed → Fill history for sample data."
           );
         } else {
           setSyncMessage(`Synced ${result.synced_transactions} new transaction(s).`);
@@ -409,13 +410,13 @@ function AccountsPageContent() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Plaid</CardTitle>
-            <CardDescription>US & UK banks</CardDescription>
+            <CardTitle className="text-base">{bankConnectCardTitle("plaid")}</CardTitle>
+            <CardDescription>{bankConnectCardDescription("plaid", isSandbox)}</CardDescription>
           </CardHeader>
           <Button
             onClick={startPlaid}
             loading={connectingPlaid}
-            loadingLabel="Opening Plaid…"
+            loadingLabel="Connecting…"
             className="w-full"
           >
             Connect Bank
@@ -439,16 +440,13 @@ function AccountsPageContent() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Mono</CardTitle>
-            <CardDescription>
-              Nigeria &amp; Africa banks
-              {isMonoSandbox && " · Sandbox"}
-            </CardDescription>
+            <CardTitle className="text-base">{bankConnectCardTitle("mono")}</CardTitle>
+            <CardDescription>{bankConnectCardDescription("mono", isMonoSandbox)}</CardDescription>
           </CardHeader>
           <Button
             onClick={startMono}
             loading={connectingMono}
-            loadingLabel="Opening Mono…"
+            loadingLabel="Connecting…"
             variant="outline"
             className="w-full"
             disabled={!monoConfigured}
@@ -515,8 +513,8 @@ function AccountsPageContent() {
                         <span className="ml-2 text-xs font-normal text-amber-400">Sandbox test company</span>
                       )}
                     </p>
-                    <p className="text-sm capitalize text-slate-400">
-                      {acc.provider}
+                    <p className="text-sm text-slate-400">
+                      {providerDisplayName(acc.provider)}
                       {acc.environment === "sandbox" && acc.provider !== "quickbooks" && " · Sandbox"}
                     </p>
                     <p className="mt-1 text-xs text-slate-600 group-hover:text-slate-500">View transactions</p>
@@ -542,7 +540,9 @@ function AccountsPageContent() {
                       </Link>
                     </Button>
                   )}
-                  {(acc.provider === "mono" || acc.provider === "plaid") && acc.status === "active" && (
+                  {(acc.provider === "mono" || acc.provider === "plaid") &&
+                    acc.status === "active" &&
+                    !(syntheticFeedEnabled && acc.provider === "mono") && (
                     <Button
                       variant="outline"
                       size="sm"

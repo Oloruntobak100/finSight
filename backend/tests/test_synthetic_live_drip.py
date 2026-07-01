@@ -56,6 +56,9 @@ async def test_run_scheduled_live_drips_processes_due_profiles():
         "app.services.synthetic_feed_service.run_db",
         new=AsyncMock(return_value=type("R", (), {"data": [due_profile]})()),
     ), patch(
+        "app.services.bank_account_lifecycle.fetch_bank_account",
+        new=AsyncMock(return_value={"id": "acct-1", "status": "active"}),
+    ), patch(
         "app.services.synthetic_feed_service.run_live_drip",
         new=AsyncMock(return_value={"created": 5}),
     ) as drip_mock, patch(
@@ -69,6 +72,72 @@ async def test_run_scheduled_live_drips_processes_due_profiles():
     assert result["processed"] == 1
     assert result["failed"] == 0
     drip_mock.assert_awaited_once_with(due_profile)
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_live_drips_skips_disconnected_account():
+    due_profile = {
+        "id": "prof-1",
+        "user_id": "user-1",
+        "account_id": "acct-1",
+        "live_feed_enabled": True,
+    }
+
+    with patch(
+        "app.services.synthetic_feed_service.synthetic_feed_allowed",
+        return_value=True,
+    ), patch("app.services.synthetic_feed_service.get_supabase"), patch(
+        "app.services.synthetic_feed_service.run_db",
+        new=AsyncMock(return_value=type("R", (), {"data": [due_profile]})()),
+    ), patch(
+        "app.services.bank_account_lifecycle.fetch_bank_account",
+        new=AsyncMock(return_value={"id": "acct-1", "status": "disconnected"}),
+    ), patch(
+        "app.services.synthetic_feed_service.run_live_drip",
+        new=AsyncMock(),
+    ) as drip_mock:
+        from app.services.synthetic_feed_service import run_scheduled_live_drips
+
+        result = await run_scheduled_live_drips()
+
+    assert result["processed"] == 0
+    assert result["skipped_inactive"] == 1
+    drip_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_live_feed_on_reconnect_when_enabled():
+    profile = {
+        "user_id": "user-1",
+        "account_id": "acct-1",
+        "live_feed_enabled": True,
+        "live_interval_hours": 6,
+    }
+
+    with patch(
+        "app.services.synthetic_feed_service.synthetic_feed_allowed",
+        return_value=True,
+    ), patch("app.services.synthetic_feed_service.get_supabase"), patch(
+        "app.services.synthetic_feed_service._select_one",
+        new=AsyncMock(return_value=profile),
+    ), patch(
+        "app.services.synthetic_feed_service._upsert_profile_row",
+        new=AsyncMock(return_value={**profile, "status": "active"}),
+    ), patch(
+        "app.services.synthetic_feed_service.run_live_drip",
+        new=AsyncMock(return_value={"created": 2}),
+    ) as drip_mock, patch(
+        "app.services.synthetic_feed_service._schedule_live_drip_retry",
+        new=AsyncMock(),
+    ):
+        from app.services.synthetic_feed_service import resume_live_feed_on_reconnect
+
+        result = await resume_live_feed_on_reconnect("user-1", "acct-1")
+
+    assert result is not None
+    assert result["resumed"] is True
+    assert result["first_drip"]["created"] == 2
+    drip_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

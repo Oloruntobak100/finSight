@@ -1,5 +1,7 @@
 """Tests for synthetic data feed narration and drip sizing."""
 
+import pytest
+
 from app.services.synthetic_narration_templates import (
     PERSONA_PRESETS,
     drip_batch_size,
@@ -122,3 +124,44 @@ def test_rows_helper_handles_none_response():
     assert _first_row(None) is None
     assert _rows(type("R", (), {"data": []})()) == []
     assert _first_row(type("R", (), {"data": [{"id": "1"}]})()) == {"id": "1"}
+
+
+@pytest.mark.asyncio
+async def test_maybe_enforce_synthetic_wins_skips_when_disabled():
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "app.services.synthetic_feed_service.synthetic_feed_allowed",
+        return_value=False,
+    ), patch(
+        "app.services.synthetic_feed_service.purge_mono_imports_user",
+        AsyncMock(),
+    ) as purge:
+        from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
+
+        archived = await maybe_enforce_synthetic_wins("user-1")
+
+    assert archived == 0
+    purge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_enforce_synthetic_wins_purges_mono_imports():
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "app.services.synthetic_feed_service.synthetic_feed_allowed",
+        return_value=True,
+    ), patch(
+        "app.services.synthetic_feed_service.user_transaction_stats",
+        AsyncMock(return_value={"mono_imported": 12, "synthetic": 100, "total": 112}),
+    ), patch(
+        "app.services.synthetic_feed_service.purge_mono_imports_user",
+        AsyncMock(return_value={"archived": 12}),
+    ) as purge:
+        from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
+
+        archived = await maybe_enforce_synthetic_wins("user-1")
+
+    assert archived == 12
+    purge.assert_awaited_once_with("user-1")

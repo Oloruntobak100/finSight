@@ -4,7 +4,9 @@ from typing import Any
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 
 from app.database import get_supabase, run_db
+from app.config import settings
 from app.services.bank_account_lifecycle import maybe_auto_restore_bank_data
+from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
 from app.services.bank_transaction_scope import count_scoped_transactions, get_active_bank_accounts
 from app.services.mono_money import normalize_mono_balance
 from app.models.analysis_filters import AnalysisFilters
@@ -40,7 +42,10 @@ async def get_user_balances(
     bank_accounts, active_bank_ids = await get_active_bank_accounts(user_id)
     if active_bank_ids:
         visible = await count_scoped_transactions(user_id, active_bank_ids)
-        await maybe_auto_restore_bank_data(user_id, bank_accounts, visible_count=visible)
+        if settings.synthetic_feed_allowed:
+            await maybe_enforce_synthetic_wins(user_id)
+        else:
+            await maybe_auto_restore_bank_data(user_id, bank_accounts, visible_count=visible)
 
     sb = get_supabase()
     accounts_res = await run_db(

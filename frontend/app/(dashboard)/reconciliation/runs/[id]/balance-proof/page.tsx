@@ -78,8 +78,8 @@ export default function BalanceProofPage() {
       {proof && (
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-            <h2 className="mb-3 font-semibold text-white">Bank balance (Mono)</h2>
-            <ProofLine label="Mono closing balance" amount={proof.mono_closing_balance} currency={currency} />
+            <h2 className="mb-3 font-semibold text-white">Bank balance</h2>
+            <ProofLine label="Bank closing balance" amount={proof.mono_closing_balance} currency={currency} />
             <ProofLine label="Plus deposits in transit" amount={proof.deposits_in_transit} currency={currency} />
             <ProofLine label="Minus outstanding payments" amount={-proof.outstanding_payments} currency={currency} />
             <ProofLine label="Bank adjustments" amount={proof.bank_adjustments} currency={currency} />

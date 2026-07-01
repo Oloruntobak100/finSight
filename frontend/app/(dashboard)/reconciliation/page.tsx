@@ -98,7 +98,7 @@ export default function ReconciliationSetupPage() {
     }
     setRunning(true);
     setError(null);
-    setStage("Fetching Mono data…");
+    setStage("Fetching bank data…");
     try {
       setStage("Fetching QuickBooks data…");
       await new Promise((r) => setTimeout(r, 300));
@@ -125,7 +125,7 @@ export default function ReconciliationSetupPage() {
       <div>
         <h1 className="text-2xl font-bold text-white">Bank Reconciliation</h1>
         <p className="text-slate-400">
-          Step 1 — Setup. Compare Mono bank feed activity against QuickBooks bank account postings.
+          Step 1 — Setup. Compare bank feed activity against QuickBooks bank account postings.
         </p>
       </div>
 
@@ -136,12 +136,12 @@ export default function ReconciliationSetupPage() {
         <div className="space-y-4 px-6 pb-6">
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-sm text-slate-400">
-              Bank (Mono)
+              Bank account
               <select value={monoAccountId} onChange={(e) => handleBankChange(e.target.value)} className={selectClass}>
                 <option value="">Select bank…</option>
                 {banks.map((b) => (
                   <option key={b.id} value={b.id}>
-                    {b.account_name} ({b.provider})
+                    {b.account_name}
                   </option>
                 ))}
               </select>
@@ -183,7 +183,7 @@ export default function ReconciliationSetupPage() {
               )}
               <div className="grid gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4 sm:grid-cols-3">
                 <div>
-                  <p className="text-xs text-slate-500">Mono closing ({preview.monoSource})</p>
+                  <p className="text-xs text-slate-500">Bank closing ({preview.monoSource})</p>
                   <p className="text-lg font-semibold text-white">{formatCurrency(preview.mono, preview.currency)}</p>
                 </div>
                 <div>

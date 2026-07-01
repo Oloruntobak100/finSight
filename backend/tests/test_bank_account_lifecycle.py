@@ -41,12 +41,16 @@ async def test_connect_or_reactivate_reuses_existing_row():
         "app.services.bank_account_lifecycle.find_bank_account_by_external_id",
         AsyncMock(return_value=existing),
     ), patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=False,
+    ), patch(
         "app.services.bank_account_lifecycle.restore_bank_account_continuity",
         AsyncMock(
             return_value={
                 "unarchived": 5,
                 "orphaned_unarchived": 0,
                 "reconciliation_runs_relinked": 1,
+                "live_feed_resumed": True,
             }
         ),
     ) as restore, patch(
@@ -69,9 +73,49 @@ async def test_connect_or_reactivate_reuses_existing_row():
 
 
 @pytest.mark.asyncio
+async def test_connect_or_reactivate_synthetic_mode_restores_metadata_and_feed():
+    existing = {"id": "acct-1", "external_account_id": "mono-1"}
+    updated_row = {**existing, "status": "active", "account_name": "Main"}
+    fetch_res = MagicMock()
+    fetch_res.data = updated_row
+
+    with patch(
+        "app.services.bank_account_lifecycle.find_bank_account_by_external_id",
+        AsyncMock(return_value=existing),
+    ), patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=True,
+    ), patch(
+        "app.services.bank_account_lifecycle._restore_bank_metadata_only",
+        AsyncMock(return_value={"resumed": True}),
+    ) as restore_meta, patch(
+        "app.services.synthetic_feed_service.maybe_enforce_synthetic_wins",
+        AsyncMock(return_value=0),
+    ), patch(
+        "app.services.bank_account_lifecycle.get_supabase",
+    ), patch(
+        "app.services.bank_account_lifecycle.run_db",
+        new=AsyncMock(side_effect=[None, fetch_res]),
+    ):
+        account, reconnected = await connect_or_reactivate_bank_account(
+            "user-1",
+            "mono",
+            "mono-1",
+            account_name="Main",
+            access_token_encrypted="enc",
+        )
+
+    assert reconnected is True
+    restore_meta.assert_awaited_once_with("user-1", "acct-1", "mono", "mono-1")
+
+
+@pytest.mark.asyncio
 async def test_maybe_auto_restore_when_archived_exist():
     account = {"id": "new-acct", "provider": "mono", "status": "active", "external_account_id": "mono-1"}
     with patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=False,
+    ), patch(
         "app.services.bank_account_lifecycle.count_archived_bank_transactions",
         AsyncMock(return_value=42),
     ), patch(
@@ -99,6 +143,9 @@ async def test_maybe_auto_restore_when_archived_exist():
 @pytest.mark.asyncio
 async def test_maybe_auto_restore_skips_when_visible_rows_exist():
     with patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=False,
+    ), patch(
         "app.services.bank_account_lifecycle.restore_bank_account_continuity",
         AsyncMock(),
     ) as restore:
@@ -108,6 +155,27 @@ async def test_maybe_auto_restore_skips_when_visible_rows_exist():
             "user-1",
             [{"id": "acct", "provider": "mono", "status": "active"}],
             visible_count=5,
+        )
+
+    assert result is None
+    restore.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_auto_restore_skips_in_synthetic_sandbox_mode():
+    with patch(
+        "app.services.bank_account_lifecycle._mono_synthetic_wins",
+        return_value=True,
+    ), patch(
+        "app.services.bank_account_lifecycle.restore_bank_account_continuity",
+        AsyncMock(),
+    ) as restore:
+        from app.services.bank_account_lifecycle import maybe_auto_restore_bank_data
+
+        result = await maybe_auto_restore_bank_data(
+            "user-1",
+            [{"id": "acct", "provider": "mono", "status": "active"}],
+            visible_count=0,
         )
 
     assert result is None

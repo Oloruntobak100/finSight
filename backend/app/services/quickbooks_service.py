@@ -144,6 +144,89 @@ async def _get_quickbooks_account_row(user_id: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+async def find_qb_account_by_realm(user_id: str, realm_id: str) -> dict[str, Any] | None:
+    """Find a QuickBooks connection row for this company (any status)."""
+    if not realm_id:
+        return None
+    sb = get_supabase()
+    res = await run_db(
+        lambda: sb.table("connected_accounts")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("provider", "quickbooks")
+        .eq("realm_id", realm_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+async def soft_disconnect_quickbooks(user_id: str, account_id: str) -> None:
+    """Revoke tokens but keep the row so reconnect by realm_id restores continuity."""
+    sb = get_supabase()
+    account_res = await run_db(
+        lambda: sb.table("connected_accounts")
+        .select("*")
+        .eq("id", account_id)
+        .eq("user_id", user_id)
+        .eq("provider", "quickbooks")
+        .single()
+        .execute()
+    )
+    account = account_res.data
+    if not account:
+        raise ValueError("QuickBooks connection not found")
+
+    token_enc = account.get("refresh_token_encrypted") or account.get("access_token_encrypted")
+    if token_enc:
+        token = decrypt_token(token_enc)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                await client.post(
+                    INTUIT_REVOKE_URL,
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Authorization": f"Basic {_basic_auth_header()}",
+                    },
+                    data={"token": token},
+                )
+        except Exception:
+            logger.exception("QuickBooks token revoke failed for account %s", account_id)
+
+    await run_db(
+        lambda: sb.table("connected_accounts")
+        .update(
+            {
+                "status": "disconnected",
+                "access_token_encrypted": None,
+                "refresh_token_encrypted": None,
+            }
+        )
+        .eq("id", account_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    await run_db(
+        lambda: sb.table("oauth_audit_log")
+        .insert(
+            {
+                "user_id": user_id,
+                "provider": "quickbooks",
+                "event": "revoked",
+                "metadata": {
+                    "account_id": account_id,
+                    "realm_id": account.get("realm_id"),
+                    "soft_disconnect": True,
+                },
+            }
+        )
+        .execute()
+    )
+
+
 async def exchange_code(user_id: str, code: str, realm_id: str) -> dict[str, Any]:
     if not settings.quickbooks_client_id or not settings.quickbooks_client_secret:
         raise ValueError("QuickBooks is not configured on the server")
@@ -167,15 +250,22 @@ async def exchange_code(user_id: str, code: str, realm_id: str) -> dict[str, Any
     }
 
     sb = get_supabase()
-    existing = await _get_quickbooks_account_row(user_id)
-    if existing:
+    existing_realm = await find_qb_account_by_realm(user_id, realm_id)
+    active_other = await _get_quickbooks_account_row(user_id)
+    if active_other and active_other.get("id") != (existing_realm or {}).get("id"):
+        if active_other.get("realm_id") != realm_id:
+            await soft_disconnect_quickbooks(user_id, active_other["id"])
+
+    reconnected = False
+    if existing_realm:
+        reconnected = existing_realm.get("status") == "disconnected"
         result = await run_db(
             lambda: sb.table("connected_accounts")
             .update(row)
-            .eq("id", existing["id"])
+            .eq("id", existing_realm["id"])
             .execute()
         )
-        account = (result.data or [existing])[0]
+        account = (result.data or [existing_realm])[0]
     else:
         result = await run_db(lambda: sb.table("connected_accounts").insert(row).execute())
         account = result.data[0]
@@ -186,12 +276,22 @@ async def exchange_code(user_id: str, code: str, realm_id: str) -> dict[str, Any
             {
                 "user_id": user_id,
                 "provider": "quickbooks",
-                "event": "authorized",
-                "metadata": {"realm_id": realm_id, "account_name": account_name},
+                "event": "reauthorized" if reconnected else "authorized",
+                "metadata": {
+                    "realm_id": realm_id,
+                    "account_name": account_name,
+                    "reconnected": reconnected,
+                },
             }
         )
         .execute()
     )
+
+    try:
+        await sync_chart_of_accounts(user_id)
+    except Exception:
+        logger.warning("COA auto-sync after QuickBooks connect failed for user %s", user_id)
+
     return account
 
 
@@ -463,37 +563,4 @@ async def refresh_token_if_needed(account: dict[str, Any]) -> dict[str, Any]:
 
 
 async def disconnect(user_id: str, account_id: str) -> None:
-    sb = get_supabase()
-    account_res = await run_db(
-        lambda: sb.table("connected_accounts")
-        .select("*")
-        .eq("id", account_id)
-        .eq("user_id", user_id)
-        .eq("provider", "quickbooks")
-        .single()
-        .execute()
-    )
-    account = account_res.data
-    token_enc = account.get("refresh_token_encrypted") or account.get("access_token_encrypted")
-    if token_enc:
-        token = decrypt_token(token_enc)
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                await client.post(
-                    INTUIT_REVOKE_URL,
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Authorization": f"Basic {_basic_auth_header()}",
-                    },
-                    data={"token": token},
-                )
-        except Exception:
-            logger.exception("QuickBooks token revoke failed for account %s", account_id)
-
-    await run_db(lambda: sb.table("connected_accounts").delete().eq("id", account_id).execute())
-    await run_db(
-        lambda: sb.table("oauth_audit_log")
-        .insert({"user_id": user_id, "provider": "quickbooks", "event": "revoked"})
-        .execute()
-    )
+    await soft_disconnect_quickbooks(user_id, account_id)

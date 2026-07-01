@@ -119,6 +119,50 @@ async def archive_transactions_for_account(user_id: str, account_id: str) -> int
     return await _archive_ids(ids)
 
 
+async def archive_non_synthetic_transactions_for_account(user_id: str, account_id: str) -> int:
+    """Archive Mono/Plaid imports only — keep synthetic rows for sandbox reconnect."""
+    ids = await _fetch_scoped_transaction_ids(
+        user_id, account_id=account_id, is_synthetic=False
+    )
+    return await _archive_ids(ids)
+
+
+async def unarchive_synthetic_transactions_for_account(
+    user_id: str, account_id: str, *, limit: int | None = None
+) -> int:
+    """Restore synthetic rows after reconnect (legacy disconnects may have archived them)."""
+    sb = get_supabase()
+    total = 0
+    while True:
+        batch_size = 100 if limit is None else min(100, max(0, limit - total))
+        if batch_size <= 0:
+            break
+        res = await run_db(
+            lambda size=batch_size: sb.table("transactions")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("account_id", account_id)
+            .eq("is_synthetic", True)
+            .not_.is_("archived_at", "null")
+            .limit(size)
+            .execute()
+        )
+        ids = [row["id"] for row in (res.data or []) if row.get("id")]
+        if not ids:
+            break
+        await run_db(
+            lambda row_ids=ids: sb.table("transactions")
+            .update({"archived_at": None})
+            .eq("user_id", user_id)
+            .in_("id", row_ids)
+            .execute()
+        )
+        total += len(ids)
+        if len(ids) < batch_size:
+            break
+    return total
+
+
 async def archive_detached_bank_transactions(user_id: str) -> int:
     """Archive bank rows with no account or account no longer connected."""
     ids = await _fetch_scoped_transaction_ids(user_id, detached_only=True)

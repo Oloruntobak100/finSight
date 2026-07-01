@@ -11,7 +11,7 @@ import type {
   ComparePeriod,
   DatePreset,
 } from "@/lib/analysis-filters";
-import { applyDatePreset } from "@/lib/analysis-filters";
+import { bankSourceFilterLabel, providerDisplayName } from "@/lib/provider-labels";
 import { cn } from "@/lib/utils";
 
 interface AnalysisFiltersProps {
@@ -104,8 +104,8 @@ export function AnalysisFiltersBar({
             }
           >
             <option value="">All</option>
-            <option value="plaid">Plaid</option>
-            <option value="mono">Mono</option>
+            <option value="plaid">{bankSourceFilterLabel("plaid")}</option>
+            <option value="mono">{bankSourceFilterLabel("mono")}</option>
           </select>
         </div>
 
@@ -159,7 +159,7 @@ export function AnalysisFiltersBar({
                 <option value="">None</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.account_name} ({a.provider})
+                    {a.account_name}
                   </option>
                 ))}
               </select>
@@ -176,7 +176,7 @@ export function AnalysisFiltersBar({
                 <option value="">None</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.account_name} ({a.provider})
+                    {a.account_name}
                   </option>
                 ))}
               </select>

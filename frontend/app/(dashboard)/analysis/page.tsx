@@ -31,6 +31,7 @@ import {
   type AnalyticsMetaAccount,
 } from "@/lib/analysis-filters";
 import { formatCategory, formatCurrency } from "@/lib/utils";
+import { providerDisplayName } from "@/lib/provider-labels";
 
 const EMPTY_PERIOD = {
   label: "No comparison",
@@ -214,7 +215,7 @@ export default function AnalysisPage() {
       (data?.bank_summary ?? []).map((r, i) => ({
         id: `bank-${i}`,
         bank: r.bank,
-        provider: r.provider || "—",
+        provider: providerDisplayName(r.provider),
         income: r.income,
         expenses: r.expenses,
         net: r.net,
@@ -334,7 +335,7 @@ function OverviewView({
 }) {
   const bankCols: DataTableColumn<(typeof bankRows)[0]>[] = [
     { key: "bank", header: "Account", sortable: true, render: (r) => r.bank, sortValue: (r) => r.bank },
-    { key: "provider", header: "Provider", render: (r) => r.provider },
+    { key: "provider", header: "Type", render: (r) => r.provider },
     {
       key: "income",
       header: "Income",
@@ -475,7 +476,7 @@ function SpendingView({ data, fmt }: { data: AnalysisData; fmt: Fmt }) {
       <AnalyticsSection title="Channel mix" description="NIP, POS, web, etc.">
         <DataTable
           data={channels}
-          emptyHint="Sync Mono transactions to see channel data"
+          emptyHint="Sync bank transactions to see channel data"
           columns={[
             { key: "channel", header: "Channel", sortable: true, render: (r) => r.channel, sortValue: (r) => r.channel },
             { key: "amount", header: "Amount", align: "right", sortable: true, sortValue: (r) => r.amount, render: (r) => fmt(r.amount) },

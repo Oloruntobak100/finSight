@@ -3,7 +3,6 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
-import { cleanupKeepSyntheticOnlyUser } from "@/lib/data-feed";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
@@ -115,12 +114,10 @@ function TransactionsPageContent() {
   const [dateTo, setDateTo] = useState("");
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [syntheticFilter, setSyntheticFilter] = useState("");
+  const [syntheticWins, setSyntheticWins] = useState(false);
   const [globalCounts, setGlobalCounts] = useState<{ total: number; synthetic: number; non_synthetic: number } | null>(
     null
   );
-  const [cleanupAvailable, setCleanupAvailable] = useState(false);
-  const [cleaningUp, setCleaningUp] = useState(false);
-  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
 
   const accountMap = Object.fromEntries(accounts.map((a) => [a.id, a.account_name]));
   const activeColumns = TRANSACTION_COLUMNS.filter((col) => visibleColumns[col.id]);
@@ -196,12 +193,14 @@ function TransactionsPageContent() {
           categories: string[];
           accounts: Account[];
           counts?: { total: number; synthetic: number; non_synthetic: number };
-          cleanup_available?: boolean;
+          synthetic_wins?: boolean;
         }>("/transactions/meta");
         setAccounts(metaRes.accounts ?? []);
         setCategories(metaRes.categories ?? []);
         if (metaRes.counts) setGlobalCounts(metaRes.counts);
-        setCleanupAvailable(Boolean(metaRes.cleanup_available));
+        const wins = Boolean(metaRes.synthetic_wins);
+        setSyntheticWins(wins);
+        if (wins) setSyntheticFilter("synthetic");
       } catch {
         try {
           const [accountsRes, categoriesRes] = await Promise.all([
@@ -231,41 +230,10 @@ function TransactionsPageContent() {
     setDateFrom("");
     setDateTo("");
     setRecurringOnly(false);
-    setSyntheticFilter("");
+    setSyntheticFilter(syntheticWins ? "synthetic" : "");
     setPage(1);
     if (typeof window !== "undefined" && searchParams.get("account_id")) {
       window.history.replaceState(null, "", "/transactions");
-    }
-  }
-
-  async function handleRemoveBankImports() {
-    if (
-      !window.confirm(
-        "Remove all bank import rows (Samuel Olamide, Mono dummy data)? Synthetic transactions are kept."
-      )
-    ) {
-      return;
-    }
-    setCleaningUp(true);
-    setCleanupMessage(null);
-    setLoadError(null);
-    try {
-      const res = await cleanupKeepSyntheticOnlyUser();
-      setCleanupMessage(
-        `Removed ${res.archived} bank import row(s). ${res.remaining_synthetic} synthetic remain.`
-      );
-      const metaRes = await apiFetch<{
-        counts?: { total: number; synthetic: number; non_synthetic: number };
-        cleanup_available?: boolean;
-      }>("/transactions/meta");
-      if (metaRes.counts) setGlobalCounts(metaRes.counts);
-      setCleanupAvailable(Boolean(metaRes.cleanup_available));
-      setPage(1);
-      await loadTransactions();
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : "Cleanup failed");
-    } finally {
-      setCleaningUp(false);
     }
   }
 
@@ -511,31 +479,6 @@ function TransactionsPageContent() {
         </div>
       </div>
 
-      {cleanupMessage && (
-        <p className="rounded-lg border border-green-900/50 bg-green-950/30 px-4 py-3 text-sm text-green-300">
-          {cleanupMessage}
-        </p>
-      )}
-
-      {cleanupAvailable && globalCounts && globalCounts.non_synthetic > 0 && (
-        <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
-          <p>
-            <strong>{globalCounts.non_synthetic}</strong> rows are Mono bank imports (e.g. Samuel Olamide) — not your
-            synthetic test data. Remove them to keep only generated transactions.
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-3 border-red-900/50 text-red-300 hover:bg-red-950/30"
-            onClick={() => void handleRemoveBankImports()}
-            loading={cleaningUp}
-            loadingLabel="Removing…"
-          >
-            Remove bank import dummy data
-          </Button>
-        </div>
-      )}
-
       {loadError && (
         <p className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">
           {loadError}
@@ -578,8 +521,9 @@ function TransactionsPageContent() {
         </div>
         {!loading && globalCounts && !accountId && !syntheticFilter && !search && !category && (
           <p className="mb-4 text-xs text-slate-500">
-            {globalCounts.synthetic} synthetic · {globalCounts.non_synthetic} from bank imports — use Source → Synthetic
-            to see generated data only
+            {syntheticWins
+              ? `${globalCounts.synthetic} synthetic transactions — imported bank rows are removed automatically in test mode`
+              : `${globalCounts.synthetic} synthetic · ${globalCounts.non_synthetic} from bank imports — use Source → Synthetic to see generated data only`}
           </p>
         )}
         <div className="overflow-hidden">

@@ -20,6 +20,7 @@ from app.services.bank_providers import (
     sync_bank_account,
 )
 from app.services.bank_account_lifecycle import fetch_bank_account, restore_bank_account_continuity
+from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
 from app.services.transaction_enrichment import reprocess_stored_transactions
 
 router = APIRouter(prefix="/banking", tags=["banking"])
@@ -121,6 +122,14 @@ async def restore_account_continuity(user_id: CurrentUser, account_id: str) -> d
         raise HTTPException(status_code=400, detail="Only bank accounts can be restored")
     if account.get("status") != "active":
         raise HTTPException(status_code=400, detail="Account must be active to restore data")
+    if provider == "mono" and settings.synthetic_feed_allowed:
+        archived = await maybe_enforce_synthetic_wins(user_id, account_id)
+        return {
+            "status": "ok",
+            "account_id": account_id,
+            "archived": archived,
+            "message": "Mono sandbox uses synthetic data feed; bank imports are not restored.",
+        }
     result = await restore_bank_account_continuity(
         user_id,
         account_id,

@@ -1,4 +1,4 @@
-export type ComparePeriod = "previous_month" | "previous_year" | "previous_period";
+import { bankSourceFilterLabel } from "@/lib/provider-labels";
 export type ProviderFilter = "" | "plaid" | "mono";
 export type DatePreset = "30d" | "90d" | "6m" | "ytd" | "custom";
 
@@ -87,7 +87,9 @@ export function filterSummaryChips(
   if (filters.dateFrom && filters.dateTo) {
     chips.push(`${filters.dateFrom} → ${filters.dateTo}`);
   }
-  if (filters.provider) chips.push(filters.provider === "plaid" ? "Plaid" : "Mono");
+  if (filters.provider) {
+    chips.push(bankSourceFilterLabel(filters.provider));
+  }
   if (filters.accountIds.length > 0) {
     const names = filters.accountIds
       .map((id) => accounts.find((a) => a.id === id)?.account_name || id)

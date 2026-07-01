@@ -7,8 +7,8 @@ export type ConnectionPhase = "exchanging" | "syncing" | "finishing";
 export type ConnectionProvider = "mono" | "plaid";
 
 const PROVIDER_LABELS: Record<ConnectionProvider, string> = {
-  mono: "Mono",
-  plaid: "Plaid",
+  mono: "Bank",
+  plaid: "Bank",
 };
 
 const STEPS: { id: ConnectionPhase; label: string; detail: string }[] = [

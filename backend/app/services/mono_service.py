@@ -495,7 +495,11 @@ async def sync_mono_transactions(
         )
         count = await _upsert_mono_transactions(sb, user_id, account_id, transactions, user_rules)
 
+    if settings.synthetic_feed_allowed:
+        from app.services.synthetic_feed_service import maybe_enforce_synthetic_wins
 
+        await maybe_enforce_synthetic_wins(user_id, account_id)
+        return 0
 
     await run_db(
 
@@ -516,5 +520,16 @@ async def sync_mono_transactions(
 
 
 async def disconnect_mono_account(user_id: str, account_id: str) -> None:
-    await archive_transactions_for_account(user_id, account_id)
+    from app.services.bank_account_lifecycle import _mono_synthetic_wins
+    from app.services.bank_transaction_scope import (
+        archive_non_synthetic_transactions_for_account,
+        archive_transactions_for_account,
+    )
+    from app.services.synthetic_feed_service import pause_live_feed_disconnect
+
+    if _mono_synthetic_wins():
+        await archive_non_synthetic_transactions_for_account(user_id, account_id)
+    else:
+        await archive_transactions_for_account(user_id, account_id)
+    await pause_live_feed_disconnect(user_id, account_id)
     await soft_disconnect_bank_account(user_id, account_id, "mono")

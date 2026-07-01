@@ -112,7 +112,7 @@ export function SimulateTransactionDialog({
           message:
             synced > 0
               ? `Added ${description} to ${accountName}. Check Transactions to see it.`
-              : `Added to Plaid — still syncing. Open Transactions or tap Sync All.`,
+              : `Added to bank — still syncing. Open Transactions or tap Sync All.`,
         });
         onOpenChange(false);
       }

@@ -532,6 +532,70 @@ async def pause_live_feed(user_id: str, account_id: str) -> dict[str, Any]:
     return {"profile": updated}
 
 
+async def pause_live_feed_disconnect(user_id: str, account_id: str) -> None:
+    """Mark feed paused while bank is disconnected; preserves live_feed_enabled for auto-resume."""
+    if not synthetic_feed_allowed():
+        return
+    sb = get_supabase()
+    profile = await _select_one(
+        sb,
+        "synthetic_feed_profiles",
+        filters=[
+            ("eq", "user_id", user_id),
+            ("eq", "account_id", account_id),
+        ],
+    )
+    if not profile or not profile.get("live_feed_enabled"):
+        return
+    await _upsert_profile_row(
+        user_id,
+        account_id,
+        {"status": "paused_disconnect"},
+    )
+
+
+async def resume_live_feed_on_reconnect(user_id: str, account_id: str) -> dict[str, Any] | None:
+    """Reschedule and run first drip when a bank reconnects with live feed still enabled."""
+    if not synthetic_feed_allowed():
+        return None
+    sb = get_supabase()
+    profile = await _select_one(
+        sb,
+        "synthetic_feed_profiles",
+        filters=[
+            ("eq", "user_id", user_id),
+            ("eq", "account_id", account_id),
+        ],
+    )
+    if not profile or not profile.get("live_feed_enabled"):
+        return None
+
+    now = datetime.now(timezone.utc)
+    updated = await _upsert_profile_row(
+        user_id,
+        account_id,
+        {
+            "status": "active",
+            "next_live_run_at": now.isoformat(),
+        },
+    )
+
+    first_drip: dict[str, Any] | None = None
+    first_drip_error: str | None = None
+    try:
+        first_drip = await run_live_drip(updated)
+    except Exception as exc:
+        logger.exception("Reconnect live drip failed for account %s", account_id)
+        first_drip_error = str(exc)[:500]
+        await _schedule_live_drip_retry(user_id, account_id, minutes=15)
+
+    return {
+        "resumed": True,
+        "first_drip": first_drip,
+        "first_drip_error": first_drip_error,
+    }
+
+
 async def run_live_drip_now(user_id: str, account_id: str) -> dict[str, Any]:
     profile = await get_or_create_profile(user_id, account_id)
     return await run_live_drip(profile)
@@ -667,6 +731,34 @@ async def purge_mono_imports_user(user_id: str) -> dict[str, Any]:
         "remaining_total": stats["total"],
         "remaining_synthetic": stats["synthetic"],
     }
+
+
+async def maybe_enforce_synthetic_wins(
+    user_id: str,
+    account_id: str | None = None,
+) -> int:
+    """In Mono sandbox mode, archive bank imports so synthetic feed data is authoritative."""
+    if not synthetic_feed_allowed():
+        return 0
+    try:
+        stats = await user_transaction_stats(user_id)
+        if (stats.get("mono_imported") or 0) <= 0:
+            return 0
+        if account_id:
+            result = await purge_mono_sandbox_dummies(user_id, account_id)
+        else:
+            result = await purge_mono_imports_user(user_id)
+        archived = int(result.get("archived") or 0)
+        if archived:
+            logger.info(
+                "Synthetic wins: archived %d Mono bank import row(s) for user %s",
+                archived,
+                user_id,
+            )
+        return archived
+    except Exception as exc:
+        logger.warning("Synthetic wins purge skipped for user %s: %s", user_id, exc)
+        return 0
 
 
 async def transaction_stats(user_id: str, account_id: str) -> dict[str, int]:
@@ -884,10 +976,18 @@ async def run_scheduled_live_drips() -> dict[str, Any]:
 
     processed = 0
     failed = 0
+    skipped_inactive = 0
     errors: list[dict[str, str]] = []
     for profile in res.data or []:
         account_id = str(profile.get("account_id") or "")
         user_id = str(profile.get("user_id") or "")
+        if account_id and user_id:
+            from app.services.bank_account_lifecycle import fetch_bank_account
+
+            account = await fetch_bank_account(user_id, account_id)
+            if not account or account.get("status") != "active":
+                skipped_inactive += 1
+                continue
         try:
             await run_live_drip(profile)
             processed += 1
@@ -899,7 +999,13 @@ async def run_scheduled_live_drips() -> dict[str, Any]:
             if user_id and account_id:
                 await _schedule_live_drip_retry(user_id, account_id, minutes=30)
 
-    return {"processed": processed, "failed": failed, "skipped": False, "errors": errors}
+    return {
+        "processed": processed,
+        "failed": failed,
+        "skipped_inactive": skipped_inactive,
+        "skipped": False,
+        "errors": errors,
+    }
 
 
 async def synthetic_feed_drip_all() -> dict[str, Any]:

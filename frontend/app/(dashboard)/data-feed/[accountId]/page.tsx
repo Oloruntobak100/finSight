@@ -157,7 +157,7 @@ export default function DataFeedAccountPage() {
     setError(null);
     try {
       const res = await importMonoHistory(accountId, histStart, histEnd);
-      setMessage(`Imported ${res.imported} transaction(s) from Mono.`);
+      setMessage(`Imported ${res.imported} transaction(s) from bank feed.`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
@@ -218,7 +218,7 @@ export default function DataFeedAccountPage() {
   async function handlePurgeMonoDummies() {
     if (
       !window.confirm(
-        "Remove all Mono import rows for this account? Synthetic transactions are kept."
+        "Remove all imported bank rows for this account? Synthetic transactions are kept."
       )
     ) {
       return;
@@ -228,7 +228,7 @@ export default function DataFeedAccountPage() {
     try {
       const res = await purgeMonoDummies(accountId);
       setMessage(
-        `Removed ${res.archived} Mono import row(s). ${res.remaining_synthetic} synthetic remain (${res.remaining_total} total).`
+        `Removed ${res.archived} imported row(s). ${res.remaining_synthetic} synthetic remain (${res.remaining_total} total).`
       );
       await load();
     } catch (err) {
@@ -241,7 +241,7 @@ export default function DataFeedAccountPage() {
   async function handleKeepSyntheticOnly() {
     if (
       !window.confirm(
-        "Remove ALL non-synthetic transactions across every bank account? This removes Samuel Olamide and other Mono import dummy rows. Synthetic rows are kept."
+        "Remove ALL non-synthetic transactions across every bank account? Synthetic rows are kept."
       )
     ) {
       return;
@@ -348,7 +348,7 @@ export default function DataFeedAccountPage() {
       )}
 
       <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-400">
-        <p className="font-medium text-slate-300">Recommended workflow (Mono sandbox)</p>
+        <p className="font-medium text-slate-300">Recommended workflow (test mode)</p>
         <ol className="mt-2 list-inside list-decimal space-y-1">
           <li>
             <strong className="text-slate-300">Persona</strong> — pick account type, daily volume range, remark rate.
@@ -361,8 +361,8 @@ export default function DataFeedAccountPage() {
             <strong className="text-slate-300">Live feed</strong> — drip new synthetic transactions going forward.
           </li>
           <li>
-            <strong className="text-slate-300">Mono import (optional)</strong> — only if you want whatever Mono returns;
-            often the same rows regardless of date range.
+            <strong className="text-slate-300">Bank import (optional)</strong> — only if you want live provider rows;
+            often the same data regardless of date range.
           </li>
         </ol>
       </div>
@@ -370,13 +370,13 @@ export default function DataFeedAccountPage() {
       {isMonoSandbox && (
         <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200/90">
           <p>
-            Mono sandbox import is <strong>disabled automatically</strong> on connect and sync. Use{" "}
+            Bank import is <strong>disabled automatically</strong> on connect and sync in test mode. Use{" "}
             <strong>Fill history</strong> after saving a persona.
           </p>
           {stats && (
             <p className="mt-2 text-xs text-amber-200/70">
               This account: <strong>{stats.total}</strong> total · <strong>{stats.synthetic}</strong> synthetic ·{" "}
-              <strong>{stats.mono_imported}</strong> Mono imports · <strong>{stats.non_synthetic}</strong> non-synthetic
+              <strong>{stats.mono_imported}</strong> imported rows · <strong>{stats.non_synthetic}</strong> non-synthetic
             </p>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -397,7 +397,7 @@ export default function DataFeedAccountPage() {
               loading={busy === "purge"}
               loadingLabel="Removing…"
             >
-              Remove Mono imports
+              Remove imported rows
             </Button>
             <Button
               variant="outline"
@@ -503,7 +503,7 @@ export default function DataFeedAccountPage() {
           <CardDescription>
             Generates Nigeria-realistic synthetic transactions across a past date range — tagged Synthetic in
             Transactions. Spread across dates so Reports and filters behave realistically. Recommended as your first data
-            step in Mono sandbox.
+            step in test mode.
           </CardDescription>
         </CardHeader>
         <div className="space-y-4 px-6 pb-6">
@@ -575,14 +575,14 @@ export default function DataFeedAccountPage() {
         </div>
       </Card>
 
-      {/* Optional Mono import */}
+      {/* Optional bank import */}
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
           <div>
-            <CardTitle className="text-base">Optional: Mono historical import</CardTitle>
+            <CardTitle className="text-base">Optional: historical bank import</CardTitle>
             <CardDescription>
-              Pulls whatever Mono has for a date range. In sandbox this is often the same few transactions (or none)
-              regardless of 3, 6, or 12 months — skip unless you specifically need real Mono-shaped rows mixed in.
+              Pulls live provider data for a date range. In test mode this is often the same few transactions (or none)
+              regardless of date range — skip unless you need provider rows mixed with synthetic data.
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={() => setShowMonoImport((v) => !v)}>
@@ -620,7 +620,7 @@ export default function DataFeedAccountPage() {
               </div>
             </div>
             <Button onClick={handleImportMono} loading={busy === "import"} loadingLabel="Importing…">
-              Import from Mono
+              Import from bank
             </Button>
           </div>
         )}
@@ -630,7 +630,7 @@ export default function DataFeedAccountPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Run log</CardTitle>
-          <CardDescription>History of Mono imports, history fills, and live drips for this bank account.</CardDescription>
+          <CardDescription>History of bank imports, history fills, and live drips for this account.</CardDescription>
         </CardHeader>
         <div className="overflow-x-auto px-6 pb-6">
           <table className="w-full text-sm">

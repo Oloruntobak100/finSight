@@ -21,6 +21,7 @@ import {
   type OpeningBalancePreview,
 } from "@/lib/books";
 import { formatCurrency } from "@/lib/utils";
+import { providerDisplayName } from "@/lib/provider-labels";
 
 interface BankAccount {
   id: string;
@@ -118,7 +119,7 @@ function OpeningBalancePanel({
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
             <p className="text-xs text-slate-500">
-              Suggested from Mono ({preview?.mono_balance_source ?? "—"})
+              Suggested from bank ({preview?.mono_balance_source ?? "—"})
             </p>
             <p className="text-sm font-medium text-white">
               {formatCurrency(preview?.suggested_mono_balance ?? 0, preview?.currency ?? "NGN")}
@@ -336,14 +337,14 @@ export default function BooksMappingsPage() {
         </CardHeader>
         <div className="space-y-4">
           {bankAccounts.length === 0 ? (
-            <p className="text-sm text-slate-500">Connect a Plaid or Mono bank account first.</p>
+            <p className="text-sm text-slate-500">Connect a bank account first.</p>
           ) : (
             bankAccounts.map((bank) => (
               <div key={bank.id} className="border-b border-slate-800/60 pb-4 last:border-0 last:pb-0">
                 <div className="grid gap-2 md:grid-cols-2 md:items-center">
                   <div>
                     <p className="font-medium text-white">{bank.account_name}</p>
-                    <p className="text-xs text-slate-500">{bank.provider}</p>
+                    <p className="text-xs text-slate-500">{providerDisplayName(bank.provider)}</p>
                   </div>
                   <select
                     className={selectClass}
